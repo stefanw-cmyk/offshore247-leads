@@ -152,12 +152,44 @@
       <button class="btn-ghost" onclick="saveKeys()" style="margin-top:auto;">Save</button>
     </div>
 
+    <!-- Postcode mode toggle -->
+    <div style="display:flex;gap:8px;margin-bottom:10px;">
+      <label class="radio-opt"><input type="radio" name="pcmode" value="single" checked onchange="handlePcMode()" /> Single postcode</label>
+      <label class="radio-opt"><input type="radio" name="pcmode" value="range" onchange="handlePcMode()" /> Postcode range</label>
+      <label class="radio-opt"><input type="radio" name="pcmode" value="city" onchange="handlePcMode()" /> City preset</label>
+    </div>
+
     <div class="search-row">
-      <div class="field-wrap">
+      <!-- Single postcode -->
+      <div class="field-wrap" id="pcSingleWrap">
         <label>Postcode</label>
         <input type="text" id="postcode" placeholder="e.g. 2000" maxlength="4" oninput="lookupPostcode(this.value)" />
         <div class="postcode-hint" id="postcodeHint"></div>
       </div>
+      <!-- Range -->
+      <div class="field-wrap" id="pcRangeWrap" style="display:none;">
+        <label>Postcode range (e.g. 2000-2100)</label>
+        <input type="text" id="postcodeRange" placeholder="e.g. 2000-2100" />
+        <div class="postcode-hint" id="rangeHint"></div>
+      </div>
+      <!-- City preset -->
+      <div class="field-wrap" id="pcCityWrap" style="display:none;">
+        <label>City / Region</label>
+        <select id="cityPreset" onchange="handleCityPreset()">
+          <option value="">Select city...</option>
+          <option value="sydney">Greater Sydney (2000-2999)</option>
+          <option value="melbourne">Greater Melbourne (3000-3999)</option>
+          <option value="brisbane">Greater Brisbane (4000-4999)</option>
+          <option value="perth">Greater Perth (6000-6999)</option>
+          <option value="adelaide">Greater Adelaide (5000-5999)</option>
+          <option value="canberra">Canberra (2600-2639)</option>
+          <option value="gold_coast">Gold Coast (4200-4299)</option>
+          <option value="newcastle">Newcastle (2300-2399)</option>
+          <option value="wollongong">Wollongong (2500-2530)</option>
+        </select>
+        <div class="postcode-hint" id="cityHint"></div>
+      </div>
+
       <div class="field-wrap">
         <label>Industry / Business Type</label>
         <select id="industrySelect" onchange="handleIndustryChange()">
@@ -178,7 +210,7 @@
         </select>
       </div>
       <div class="field-wrap">
-        <label>Batch size</label>
+        <label>Per postcode</label>
         <select id="batch">
           <option value="10">10 leads</option>
           <option value="20" selected>20 leads</option>
@@ -191,6 +223,17 @@
         <input type="text" id="customIndustry" placeholder="e.g. physiotherapy clinic" />
       </div>
       <button class="btn" id="runBtn" onclick="toggleRun()" style="margin-top:auto;">Prospect ›</button>
+    </div>
+
+    <!-- Queue progress bar (shown during range/city runs) -->
+    <div id="queueBar" style="display:none;padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:4px;margin-bottom:10px;">
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-bottom:6px;">
+        <span id="queueLabel">Running postcode queue...</span>
+        <span id="queueCount"></span>
+      </div>
+      <div style="background:var(--surface2);border-radius:3px;height:6px;overflow:hidden;">
+        <div id="queueBar_fill" style="height:100%;background:var(--accent);width:0%;transition:width 0.4s;border-radius:3px;"></div>
+      </div>
     </div>
 
     <div class="filter-row">
@@ -500,6 +543,64 @@ function switchTab(name) {
   if (name === 'coverage') loadCoverage();
 }
 
+// ─── City preset postcode ranges ─────────────────────────────────────────────
+const CITY_RANGES = {
+  sydney:     [2000,2999], melbourne: [3000,3999], brisbane:  [4000,4999],
+  perth:      [6000,6999], adelaide:  [5000,5999], canberra:  [2600,2639],
+  gold_coast: [4200,4299], newcastle: [2300,2399], wollongong:[2500,2530]
+};
+
+function handlePcMode() {
+  const mode = document.querySelector('input[name="pcmode"]:checked').value;
+  document.getElementById('pcSingleWrap').style.display  = mode==='single' ? 'flex' : 'none';
+  document.getElementById('pcRangeWrap').style.display   = mode==='range'  ? 'flex' : 'none';
+  document.getElementById('pcCityWrap').style.display    = mode==='city'   ? 'flex' : 'none';
+  document.getElementById('queueBar').style.display = 'none';
+}
+
+function handleCityPreset() {
+  const val = document.getElementById('cityPreset').value;
+  if (!val) { document.getElementById('cityHint').textContent = ''; return; }
+  const [start, end] = CITY_RANGES[val];
+  document.getElementById('cityHint').textContent = `Postcodes ${start}–${end} · ${end-start+1} postcodes`;
+}
+
+function getPostcodeQueue() {
+  const mode = document.querySelector('input[name="pcmode"]:checked').value;
+  if (mode === 'single') {
+    const pc = document.getElementById('postcode').value.trim();
+    return pc.length === 4 ? [pc] : [];
+  }
+  if (mode === 'range') {
+    const val = document.getElementById('postcodeRange').value.trim();
+    const match = val.match(/^(\d{4})[-–](\d{4})$/);
+    if (!match) { document.getElementById('rangeHint').textContent = 'Format: 2000-2100'; return []; }
+    const start = parseInt(match[1]), end = parseInt(match[2]);
+    if (end < start || end - start > 500) { document.getElementById('rangeHint').textContent = 'Max range is 500 postcodes'; return []; }
+    const queue = [];
+    for (let i = start; i <= end; i++) queue.push(String(i).padStart(4,'0'));
+    document.getElementById('rangeHint').textContent = `${queue.length} postcodes queued`;
+    return queue;
+  }
+  if (mode === 'city') {
+    const val = document.getElementById('cityPreset').value;
+    if (!val) return [];
+    const [start, end] = CITY_RANGES[val];
+    const queue = [];
+    for (let i = start; i <= end; i++) queue.push(String(i).padStart(4,'0'));
+    return queue;
+  }
+  return [];
+}
+
+function updateQueueBar(done, total, label) {
+  const bar = document.getElementById('queueBar');
+  bar.style.display = total > 1 ? 'block' : 'none';
+  document.getElementById('queueLabel').textContent = label || 'Running postcode queue...';
+  document.getElementById('queueCount').textContent = `${done} / ${total} postcodes`;
+  document.getElementById('queueBar_fill').style.width = total > 0 ? `${Math.round(done/total*100)}%` : '0%';
+}
+
 // ─── Keys & industry ─────────────────────────────────────────────────────────
 window.addEventListener('load', () => {
   const ak = localStorage.getItem('lp_anthropic');
@@ -650,13 +751,54 @@ let isRunning = false, stopRequested = false;
 
 function toggleRun() {
   if (isRunning) { stopRequested = true; document.getElementById('runBtn').textContent = 'Stopping...'; }
-  else runSearch();
+  else runQueue();
 }
 
-async function runSearch() {
+async function runQueue() {
+  const queue = getPostcodeQueue();
+  if (queue.length === 0) { setStatus('Enter a valid postcode, range, or select a city.', 'error'); return; }
+
+  const btn = document.getElementById('runBtn');
+  btn.textContent = 'Stop ✕'; btn.classList.add('btn-stop');
+  isRunning = true; stopRequested = false;
+
+  for (let i = 0; i < queue.length; i++) {
+    if (stopRequested) break;
+    const pc = queue[i];
+    updateQueueBar(i, queue.length, `Postcode ${pc} (${i+1}/${queue.length})`);
+    // Pre-lookup postcode info
+    if (!POSTCODE_CACHE[pc]) {
+      try {
+        const r = await fetch(\`https://api.zippopotam.us/au/\${pc}\`);
+        if (r.ok) {
+          const d = await r.json();
+          const place = d.places[0];
+          POSTCODE_CACHE[pc] = { suburb: place['place name'], state: place['state abbreviation'], display: \`\${place['place name']}, \${place['state abbreviation']}\` };
+        } else {
+          POSTCODE_CACHE[pc] = { suburb: pc, state: '', display: pc };
+        }
+      } catch(e) { POSTCODE_CACHE[pc] = { suburb: pc, state: '', display: pc }; }
+    }
+    // Set single postcode field so runSearch picks it up
+    document.getElementById('postcode').value = pc;
+    document.getElementById('postcodeHint').textContent = POSTCODE_CACHE[pc].display;
+    await runSearch(pc);
+    if (i < queue.length - 1 && !stopRequested) {
+      updateQueueBar(i+1, queue.length, \`Postcode \${pc} done · next: \${queue[i+1]}\`);
+      await new Promise(r => setTimeout(r, 3000));
+    }
+  }
+
+  updateQueueBar(queue.length, queue.length, 'Queue complete');
+  isRunning = false; stopRequested = false;
+  btn.textContent = 'Prospect ›'; btn.classList.remove('btn-stop');
+  setStatus(\`Queue complete. \${leads.filter(l=>l.mobile!=='—').length} mobiles across \${leads.length} leads.\`, 'done');
+}
+
+async function runSearch(forcedPostcode) {
   const apiKey = document.getElementById('apiKey').value.trim();
   const mapsKey = document.getElementById('mapsKey').value.trim();
-  const postcode = document.getElementById('postcode').value.trim();
+  const postcode = forcedPostcode || document.getElementById('postcode').value.trim();
   const runBy = document.getElementById('runBy').value.trim() || 'unknown';
   if (!apiKey || !mapsKey) { setStatus('Enter both API keys first.', 'error'); return; }
   if (postcode.length !== 4) { setStatus('Enter a valid 4-digit Australian postcode.', 'error'); return; }
@@ -667,10 +809,17 @@ async function runSearch() {
   const industry = getIndustry();
   const batch = parseInt(document.getElementById('batch').value);
 
-  isRunning = true; stopRequested = false;
-  const btn = document.getElementById('runBtn');
-  btn.textContent = 'Stop ✕'; btn.classList.add('btn-stop');
-  clearProgress(); leads = []; renderTable(); updateCounts();
+  // Only take over btn if running solo (not via queue)
+  const isSolo = !isRunning;
+  if (isSolo) {
+    isRunning = true; stopRequested = false;
+    const btn = document.getElementById('runBtn');
+    btn.textContent = 'Stop ✕'; btn.classList.add('btn-stop');
+  }
+  clearProgress();
+  // In queue mode, accumulate leads; in solo mode, reset
+  if (isSolo) { leads = []; currentPage = 0; }
+  renderTable(); updateCounts();
 
   setStatus(`Stage 1: Google Maps — finding ${batch} ${industry} in ${suburb} (${postcode})...`, 'active');
   addProgress(`Google Maps: "${industry}" in ${suburb} ${state}`, 'active');
@@ -789,8 +938,11 @@ mobile_verified=true only if mobile is on their own website. Use "—" for missi
     addProgress('Failed: ' + err.message, 'err');
   }
 
-  isRunning = false; stopRequested = false;
-  btn.textContent = 'Prospect ›'; btn.classList.remove('btn-stop');
+  if (isSolo) {
+    isRunning = false; stopRequested = false;
+    document.getElementById('runBtn').textContent = 'Prospect ›';
+    document.getElementById('runBtn').classList.remove('btn-stop');
+  }
 }
 
 // ─── Re-enrich single ─────────────────────────────────────────────────────────
