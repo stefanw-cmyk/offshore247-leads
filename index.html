@@ -769,11 +769,11 @@ async function runQueue() {
     // Pre-lookup postcode info
     if (!POSTCODE_CACHE[pc]) {
       try {
-        const r = await fetch(\`https://api.zippopotam.us/au/\${pc}\`);
+        const r = await fetch(`https://api.zippopotam.us/au/\${pc}`);
         if (r.ok) {
           const d = await r.json();
           const place = d.places[0];
-          POSTCODE_CACHE[pc] = { suburb: place['place name'], state: place['state abbreviation'], display: \`\${place['place name']}, \${place['state abbreviation']}\` };
+          POSTCODE_CACHE[pc] = { suburb: place['place name'], state: place['state abbreviation'], display: `\${place['place name']}, \${place['state abbreviation']}` };
         } else {
           POSTCODE_CACHE[pc] = { suburb: pc, state: '', display: pc };
         }
@@ -784,7 +784,7 @@ async function runQueue() {
     document.getElementById('postcodeHint').textContent = POSTCODE_CACHE[pc].display;
     await runSearch(pc);
     if (i < queue.length - 1 && !stopRequested) {
-      updateQueueBar(i+1, queue.length, \`Postcode \${pc} done · next: \${queue[i+1]}\`);
+      updateQueueBar(i+1, queue.length, `Postcode \${pc} done · next: \${queue[i+1]}`);
       await new Promise(r => setTimeout(r, 3000));
     }
   }
@@ -792,7 +792,7 @@ async function runQueue() {
   updateQueueBar(queue.length, queue.length, 'Queue complete');
   isRunning = false; stopRequested = false;
   btn.textContent = 'Prospect ›'; btn.classList.remove('btn-stop');
-  setStatus(\`Queue complete. \${leads.filter(l=>l.mobile!=='—').length} mobiles across \${leads.length} leads.\`, 'done');
+  setStatus(`Queue complete. \${leads.filter(l=>l.mobile!=='—').length} mobiles across \${leads.length} leads.`, 'done');
 }
 
 async function runSearch(forcedPostcode) {
