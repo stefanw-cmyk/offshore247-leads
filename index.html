@@ -122,6 +122,7 @@
   <div class="tabs">
     <button class="tab active" onclick="switchTab('prospect')">Prospect</button>
     <button class="tab" onclick="switchTab('manual')" id="manualTab">Manual Queue</button>
+    <button class="tab" onclick="switchTab('namefix')" id="namefixTab">Name Fix</button>
     <button class="tab" onclick="switchTab('coverage')">Coverage</button>
   </div>
 </div>
@@ -202,7 +203,10 @@
       </select>
     </div>
 
-    <button class="btn" id="runBtn" onclick="toggleRun()" style="margin-top:auto">Prospect ›</button>
+    <div style="display:flex;gap:6px;margin-top:auto">
+      <button class="btn" id="runBtn" onclick="toggleRun()">Prospect ›</button>
+      <button class="btn-ghost" id="resumeBtn" onclick="resumeRun()" title="Continue from last stopped postcode for this industry">Resume ↩</button>
+    </div>
   </div>
 
   <div id="customIndustryRow" style="display:none;margin-bottom:10px">
@@ -221,7 +225,7 @@
       <label class="radio-opt"><input type="radio" name="targetType" value="total"> Total leads</label>
       <label class="radio-opt"><input type="radio" name="targetType" value="mobile"> Confirmed mobiles</label>
     </div>
-    <span style="font-size:11px;color:var(--muted);margin-left:auto">Queue stops automatically when target is hit</span>
+    <span style="font-size:11px;color:var(--muted);margin-left:auto">Queue stops when target hit &nbsp;·&nbsp; <span id="dbMobileCount" style="color:var(--accent)">—</span> mobiles already in DB</span>
   </div>
 
   <!-- Export filter -->
@@ -299,6 +303,33 @@
   </div>
 </div>
 
+<!-- ═══ NAME FIX ══════════════════════════════════════════════════════════════ -->
+<div class="pane" id="pane-namefix">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <div style="font-size:12px;color:var(--muted)">Leads in Supabase with a mobile but no contact name. Claude looks up the principal name only — fast and cheap.</div>
+    <div style="display:flex;gap:8px">
+      <button class="btn-ghost" onclick="loadNameFix()">↺ Load from DB</button>
+      <button class="btn-ghost" onclick="runNameFix()" id="runNameFixBtn" disabled>Run Name Lookup ›</button>
+      <button class="btn-ghost" onclick="exportNameFixCSV()" id="exportNameFixBtn" disabled>Export Fixed → Zoho</button>
+    </div>
+  </div>
+  <div class="status-bar"><div class="dot" id="nfDot"></div><span id="nfStatus">Click "Load from DB" to find leads missing names.</span></div>
+  <div class="table-wrap">
+    <table style="min-width:800px;width:100%;border-collapse:collapse;table-layout:fixed">
+      <colgroup><col style="width:210px"/><col style="width:130px"/><col style="width:180px"/><col style="width:150px"/><col style="width:80px"/><col style="width:50px"/></colgroup>
+      <thead><tr>
+        <th style="background:var(--surface);text-align:left;padding:9px 12px;font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);border-bottom:1px solid var(--border)">Company</th>
+        <th style="background:var(--surface);text-align:left;padding:9px 12px;font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);border-bottom:1px solid var(--border)">Mobile</th>
+        <th style="background:var(--surface);text-align:left;padding:9px 12px;font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);border-bottom:1px solid var(--border)">Name found</th>
+        <th style="background:var(--surface);text-align:left;padding:9px 12px;font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);border-bottom:1px solid var(--border)">Website</th>
+        <th style="background:var(--surface);text-align:left;padding:9px 12px;font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);border-bottom:1px solid var(--border)">Status</th>
+        <th style="background:var(--surface);border-bottom:1px solid var(--border)"></th>
+      </tr></thead>
+      <tbody id="nfTableBody"><tr><td colspan="6"><div class="empty-state">Click Load from DB to begin.</div></td></tr></tbody>
+    </table>
+  </div>
+</div>
+
 <!-- ═══ COVERAGE ═════════════════════════════════════════════════════════════ -->
 <div class="pane" id="pane-coverage">
   <div class="cov-filters">
@@ -366,6 +397,7 @@ function switchTab(name){
   document.getElementById(`pane-${name}`).classList.add('active');
   if(name==='coverage')loadCoverage();
   if(name==='manual')renderManualTable();
+  if(name==='prospect')updateDbMobileCount();
 }
 
 // ─── Postcode mode ────────────────────────────────────────────────────────────
@@ -472,22 +504,20 @@ function cleanMobile(num){
 // ─── Address parsing ──────────────────────────────────────────────────────────
 function extractSuburb(address){
   if(!address||address==='—')return'';
-  // Google shortFormattedAddress is usually "Suburb State Postcode" or "Suburb, State"
-  // Strip leading street numbers, unit numbers etc
-  let s=address;
-  // Remove unit/level prefixes
-  s=s.replace(/^(level|lvl|unit|suite|shop|u|l)\s*[\d\/]+[,\s]*/i,'');
-  // Remove street number at start
-  s=s.replace(/^\d+[\/\-]?\d*\s+/,'');
-  // Split on comma — first meaningful part is suburb
+  // Google Maps shortFormattedAddress examples:
+  // "New Farm QLD 4005"
+  // "123 Main St, New Farm QLD 4005"
+  // "Level 2/45 Queen St, Brisbane City QLD 4000"
+  let s=address.trim();
+  // Split on comma — take last meaningful segment which has suburb+state+postcode
   const parts=s.split(',');
-  if(parts.length>=2){
-    // Last part usually has state+postcode, second to last is suburb
-    const suburb=parts[parts.length-2].trim().replace(/\b(NSW|VIC|QLD|WA|SA|TAS|ACT|NT)\b.*/,'').replace(/\d{4}/,'').trim();
-    if(suburb.length>1)return suburb;
-  }
-  // No comma — strip state and postcode from end
-  return s.replace(/\b(NSW|VIC|QLD|WA|SA|TAS|ACT|NT)\b.*/,'').replace(/\d{4}/,'').trim().replace(/,\s*$/,'');
+  const last=parts[parts.length-1].trim();
+  // last is usually "Suburb STATE POSTCODE" e.g. "New Farm QLD 4005"
+  // Strip state abbreviation and postcode
+  const suburb=last.replace(/\b(NSW|VIC|QLD|WA|SA|TAS|ACT|NT)\b.*/,'').replace(/\d{4}/,'').trim();
+  if(suburb.length>1)return suburb;
+  // Fallback: strip everything after state
+  return s.replace(/\b(NSW|VIC|QLD|WA|SA|TAS|ACT|NT)\b.*/,'').split(',').pop().trim();
 }
 
 function extractState(s){
@@ -1057,6 +1087,207 @@ function exportManualCSV(){
   });
   downloadCSV([headers,...rows],`zoho_manual_${date}.csv`);
 }
+
+// ─── Resume last run ──────────────────────────────────────────────────────────
+async function resumeRun(){
+  const industry=getIndustry();
+  const mode=document.querySelector('input[name="pcmode"]:checked').value;
+  if(mode==='single'){setStatus('Resume works with range or city mode only.','error');return;}
+  
+  setStatus('Checking Supabase for last run position...','active');
+  try{
+    // Get all postcodes already run for this industry
+    const rows=await sbFetch(`prospecting_runs?industry=ilike.${encodeURIComponent(industry)}&select=postcode&order=run_date.desc&limit=500`);
+    const donePostcodes=new Set((rows||[]).map(r=>r.postcode));
+    
+    // Get full queue
+    const fullQueue=getPostcodeQueue();
+    if(fullQueue.length===0){setStatus('Enter a postcode range or city first.','error');return;}
+    
+    // Filter to only unrun postcodes
+    const remaining=fullQueue.filter(pc=>!donePostcodes.has(pc));
+    
+    if(remaining.length===0){
+      setStatus(`All ${fullQueue.length} postcodes already run for ${industry}. Try a different range.`,'done');
+      return;
+    }
+    
+    const skippedCount=fullQueue.length-remaining.length;
+    setStatus(`Resuming — skipping ${skippedCount} already-run postcodes, ${remaining.length} remaining.`,'active');
+    
+    // Get cumulative mobile count from DB
+    const mobileRows=await sbFetch(`leads?industry=ilike.${encodeURIComponent(industry)}&mobile=not.is.null&select=id&limit=1&head=true`,{headers:{'Prefer':'count=exact'}});
+    
+    // Run only the remaining queue
+    const btn=document.getElementById('runBtn');
+    btn.textContent='Stop ✕';btn.classList.add('btn-stop');
+    isRunning=true;stopRequested=false;
+    
+    for(let i=0;i<remaining.length;i++){
+      if(stopRequested||targetHit())break;
+      const pc=remaining[i];
+      updateQueueBar(i,remaining.length,`Resuming: postcode ${pc} (${i+1}/${remaining.length} remaining)`);
+      if(!PC_CACHE[pc]){
+        try{
+          const r=await fetch(`https://api.zippopotam.us/au/${pc}`);
+          if(r.ok){const d=await r.json(),p=d.places[0];PC_CACHE[pc]={suburb:p['place name'],state:p['state abbreviation'],display:`${p['place name']}, ${p['state abbreviation']}`};}
+          else PC_CACHE[pc]={suburb:pc,state:'',display:pc};
+        }catch{PC_CACHE[pc]={suburb:pc,state:'',display:pc};}
+      }
+      document.getElementById('postcode').value=pc;
+      document.getElementById('postcodeHint').textContent=PC_CACHE[pc].display;
+      await runSearch(pc);
+      if(i<remaining.length-1&&!stopRequested&&!targetHit())await new Promise(r=>setTimeout(r,1500));
+    }
+    
+    isRunning=false;stopRequested=false;
+    btn.textContent='Prospect ›';btn.classList.remove('btn-stop');
+    updateQueueBar(remaining.length,remaining.length,targetHit()?'Target reached':'Resume complete');
+    const mCount=leads.filter(l=>l.mobile!=='—').length;
+    setStatus(`Resume complete — ${leads.length} new leads, ${mCount} new mobiles.`,'done');
+  }catch(e){setStatus('Resume error: '+e.message,'error');}
+}
+
+// ─── DB mobile count for target display ──────────────────────────────────────
+async function updateDbMobileCount(){
+  const industry=getIndustry();
+  try{
+    const rows=await sbFetch(`leads?industry=ilike.${encodeURIComponent(industry)}&mobile=not.is.null&select=id`);
+    const count=(rows||[]).length;
+    document.getElementById('dbMobileCount').textContent=count+' mobiles';
+  }catch{document.getElementById('dbMobileCount').textContent='—';}
+}
+
+// ─── Name Fix ─────────────────────────────────────────────────────────────────
+let nfLeads=[];
+
+async function loadNameFix(){
+  document.getElementById('nfDot').className='dot active';
+  document.getElementById('nfStatus').textContent='Loading nameless leads from Supabase...';
+  try{
+    // Find leads with mobile but no contact name
+    const rows=await sbFetch('leads?mobile=not.is.null&contact=is.null&select=id,company,mobile,website,postcode,suburb,state,industry,run_id&limit=200');
+    nfLeads=(rows||[]).map(r=>({...r,foundName:'',foundTitle:'',status:'pending'}));
+    renderNfTable();
+    document.getElementById('nfDot').className='dot done';
+    document.getElementById('nfStatus').textContent=`${nfLeads.length} leads found with mobile but no name.`;
+    document.getElementById('runNameFixBtn').disabled=nfLeads.length===0;
+    document.getElementById('exportNameFixBtn').disabled=nfLeads.length===0;
+  }catch(e){
+    document.getElementById('nfDot').className='dot error';
+    document.getElementById('nfStatus').textContent='Error: '+e.message;
+  }
+}
+
+function renderNfTable(){
+  const tbody=document.getElementById('nfTableBody');
+  if(nfLeads.length===0){tbody.innerHTML='<tr><td colspan="6"><div class="empty-state">No nameless leads found.</div></td></tr>';return;}
+  tbody.innerHTML=nfLeads.map((l,i)=>`
+    <tr id="nfrow-${i}">
+      <td style="padding:9px 12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);font-size:13px">${l.company}</td>
+      <td style="padding:9px 12px;color:var(--accent);font-size:12px">${l.mobile}</td>
+      <td style="padding:9px 12px">
+        ${l.foundName
+          ?`<div style="color:var(--text);font-size:13px">${l.foundName}</div>${l.foundTitle?`<div style="color:var(--muted);font-size:11px">${l.foundTitle}</div>`:''}`
+          :`<span style="color:var(--muted);font-size:11px">${l.status==='searching'?'searching...':l.status==='not_found'?'not found':'—'}</span>`}
+      </td>
+      <td style="padding:9px 12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+        ${l.website?`<a href="${l.website}" target="_blank" style="font-size:11px;color:var(--accent)">↗ ${l.website.replace(/https?:\/\//,'').slice(0,30)}</a>`:'<span style="color:var(--muted);font-size:11px">no website</span>'}
+      </td>
+      <td style="padding:9px 12px">
+        <span style="font-size:10px;padding:2px 6px;border-radius:3px;${l.status==='done'?'background:rgba(181,240,160,.12);color:var(--accent2)':l.status==='not_found'?'background:rgba(240,192,112,.1);color:var(--warning)':'color:var(--muted)'}">${l.status}</span>
+      </td>
+      <td style="padding:9px 12px">
+        <button style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:12px" onclick="runSingleNf(${i})" title="Look up name">↺</button>
+      </td>
+    </tr>`).join('');
+}
+
+async function runNameFix(){
+  const apiKey=document.getElementById('apiKey').value.trim();
+  if(!apiKey){document.getElementById('nfStatus').textContent='Enter Anthropic API key first.';return;}
+  document.getElementById('runNameFixBtn').disabled=true;
+  const pending=nfLeads.filter(l=>l.status==='pending'&&l.website);
+  document.getElementById('nfDot').className='dot active';
+  document.getElementById('nfStatus').textContent=`Looking up names for ${pending.length} leads...`;
+  
+  for(let i=0;i<pending.length;i++){
+    const lead=pending[i];
+    const idx=nfLeads.indexOf(lead);
+    lead.status='searching';renderNfTable();
+    
+    const prompt=`Who is the owner, principal, director, founder, or most senior person at this Australian ${lead.industry||'business'}?
+Business: ${lead.company}
+Website: ${lead.website}
+Find their team/about page and identify the most senior person's full name and title.
+Return ONLY raw JSON: {"contact":"Full Name","title":"Their Title"}
+Use "—" if genuinely not findable.`;
+    
+    try{
+      const text=await callClaude(apiKey,prompt,25000,2);
+      const match=text.replace(/```json|```/g,'').trim().match(/\{[\s\S]*?\}/);
+      if(match){
+        const e=JSON.parse(match[0]);
+        if(e.contact&&e.contact!=='—'){lead.foundName=e.contact;lead.foundTitle=e.title||'';lead.status='done';}
+        else lead.status='not_found';
+      }else lead.status='not_found';
+      
+      // Update Supabase
+      if(lead.status==='done'&&lead.id){
+        try{await sbFetch(`leads?id=eq.${lead.id}`,{method:'PATCH',prefer:'return=minimal',body:JSON.stringify({contact:lead.foundName,title:lead.foundTitle||null})});}
+        catch{}
+      }
+    }catch{lead.status='not_found';}
+    renderNfTable();
+    if(i<pending.length-1)await new Promise(r=>setTimeout(r,3000));
+  }
+  
+  const found=nfLeads.filter(l=>l.status==='done').length;
+  document.getElementById('nfDot').className='dot done';
+  document.getElementById('nfStatus').textContent=`Done — ${found} names found out of ${pending.length} leads.`;
+  document.getElementById('runNameFixBtn').disabled=false;
+}
+
+async function runSingleNf(idx){
+  const apiKey=document.getElementById('apiKey').value.trim();if(!apiKey)return;
+  const lead=nfLeads[idx];if(!lead||!lead.website)return;
+  lead.status='searching';renderNfTable();
+  const prompt=`Who is the owner/principal/director/founder of this Australian ${lead.industry||'business'}?
+Business: ${lead.company} Website: ${lead.website}
+Find team/about page, identify most senior person.
+Return ONLY JSON: {"contact":"Full Name","title":"Title"} — use "—" if not found.`;
+  try{
+    const text=await callClaude(apiKey,prompt,25000,2);
+    const match=text.replace(/```json|```/g,'').trim().match(/\{[\s\S]*?\}/);
+    if(match){const e=JSON.parse(match[0]);if(e.contact&&e.contact!=='—'){lead.foundName=e.contact;lead.foundTitle=e.title||'';lead.status='done';}else lead.status='not_found';}
+    else lead.status='not_found';
+    if(lead.status==='done'&&lead.id){try{await sbFetch(`leads?id=eq.${lead.id}`,{method:'PATCH',prefer:'return=minimal',body:JSON.stringify({contact:lead.foundName,title:lead.foundTitle||null})});}catch{}}
+  }catch{lead.status='not_found';}
+  renderNfTable();
+}
+
+function exportNameFixCSV(){
+  const toExport=nfLeads.filter(l=>l.status==='done');
+  if(toExport.length===0){alert('No names found yet to export.');return;}
+  const date=new Date().toISOString().slice(0,10);
+  const headers=['Last Name','First Name','Title','Company','Phone','Mobile','Email','Website','City','Province (State)','Country','Industry','Lead Source','Lead Status','Campaign Name','Service Interest','Estimated Headcount Needed','Description'];
+  const rows=toExport.map(l=>{
+    const parts=l.foundName.trim().split(/\s+/);
+    const firstName=parts.length>1?parts.slice(0,-1).join(' '):(parts[0]||'');
+    const lastName=parts.length>1?parts[parts.length-1]:'';
+    return[lastName,firstName,l.foundTitle||'',l.company||'','',l.mobile||'','',l.website||'',l.suburb||'',l.state||'','Australia',mapIndustry(l.industry||''),'Lead Prospector — Offshore 24/7','New','','','',''];
+  });
+  downloadCSV([headers,...rows],`zoho_namefixed_${date}.csv`);
+}
+
+// switchTab handles all tabs including namefix and prospect
+
+// Update DB count when industry changes
+document.addEventListener('DOMContentLoaded',()=>{
+  document.getElementById('industrySelect').addEventListener('change',updateDbMobileCount);
+  updateDbMobileCount();
+});
+
 </script>
 </body>
 </html>
