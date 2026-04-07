@@ -144,7 +144,7 @@
     <label class="radio-opt"><input type="radio" name="pcmode" value="city" onchange="handlePcMode()"> City preset</label>
   </div>
 
-  <div class="search-row">
+  <div class="search-row" style="grid-template-columns:200px 1fr auto">
     <div id="pcSingleWrap" class="field-wrap">
       <label>Postcode</label>
       <input type="text" id="postcode" placeholder="e.g. 2000" maxlength="4" oninput="lookupPostcode(this.value)"/>
@@ -190,16 +190,6 @@
         <option value="insurance broker">Insurance Broker</option>
         <option value="engineering firm">Engineering Firm</option>
         <option value="custom">Custom...</option>
-      </select>
-    </div>
-
-    <div class="field-wrap">
-      <label>Per postcode</label>
-      <select id="batch">
-        <option value="10">10 leads</option>
-        <option value="20" selected>20 leads</option>
-        <option value="50">50 leads</option>
-        <option value="100">100 leads</option>
       </select>
     </div>
 
@@ -622,24 +612,64 @@ function updateQueueBar(done,total,label){
   document.getElementById('queueFill').style.width=total>0?`${Math.round(done/total*100)}%`:'0%';
 }
 
-// ─── Google Maps ──────────────────────────────────────────────────────────────
+// ─── Google Maps — multi-query to maximise results per suburb ─────────────────
+// Industry aliases — multiple search terms per industry to get more results
+const INDUSTRY_ALIASES={
+  'real estate agency':['real estate agency','real estate agent','property management','real estate principal','real estate office'],
+  'accounting firm':['accounting firm','accountant','CPA firm','chartered accountant','tax agent'],
+  'law firm':['law firm','solicitor','lawyer','legal practice','barrister'],
+  'mortgage broker':['mortgage broker','home loan broker','finance broker','mortgage lender'],
+  'financial planning firm':['financial planner','financial advisor','wealth management','financial planning'],
+  'it company':['IT company','IT services','managed IT','technology company','software company'],
+  'marketing agency':['marketing agency','digital marketing','advertising agency','SEO agency'],
+  'construction company':['construction company','builder','building company','contractor'],
+  'medical practice':['medical practice','medical centre','GP clinic','doctor clinic'],
+  'dental practice':['dental practice','dentist','dental clinic','dental surgery'],
+  'recruitment agency':['recruitment agency','staffing agency','labour hire','employment agency'],
+  'insurance broker':['insurance broker','insurance agent','insurance adviser'],
+  'engineering firm':['engineering firm','engineering company','structural engineer','civil engineer'],
+};
+
+function getSearchQueries(industry){
+  const aliases=INDUSTRY_ALIASES[industry.toLowerCase()];
+  return aliases||[industry,industry+' business',industry+' office'];
+}
+
+async function fetchSingleQuery(mapsKey,query,suburb){
+  const resp=await fetch('https://places.googleapis.com/v1/places:searchText',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','X-Goog-Api-Key':mapsKey,'X-Goog-FieldMask':'places.displayName,places.formattedAddress,places.nationalPhoneNumber,places.websiteUri,places.shortFormattedAddress'},
+    body:JSON.stringify({textQuery:`${query} in ${suburb} Australia`,maxResultCount:20,languageCode:'en'})
+  });
+  const data=await resp.json();
+  if(data.error)throw new Error('Google Maps: '+data.error.message);
+  return data.places||[];
+}
+
 async function fetchPlaces(mapsKey,industry,suburb,maxResults){
-  const all=[];let pageToken=null;
-  do{
-    const body={textQuery:`${industry} in ${suburb} Australia`,maxResultCount:Math.min(20,maxResults-all.length),languageCode:'en'};
-    if(pageToken)body.pageToken=pageToken;
-    const resp=await fetch('https://places.googleapis.com/v1/places:searchText',{
-      method:'POST',
-      headers:{'Content-Type':'application/json','X-Goog-Api-Key':mapsKey,'X-Goog-FieldMask':'places.displayName,places.formattedAddress,places.nationalPhoneNumber,places.websiteUri,places.shortFormattedAddress,nextPageToken'}
-      ,body:JSON.stringify(body)});
-    const data=await resp.json();
-    if(data.error)throw new Error('Google Maps: '+data.error.message);
-    all.push(...(data.places||[]));
-    pageToken=data.nextPageToken||null;
+  const queries=getSearchQueries(industry);
+  const seen=new Set();
+  const all=[];
+
+  for(const query of queries){
     if(all.length>=maxResults)break;
-    if(pageToken)await new Promise(r=>setTimeout(r,2000));
-  }while(pageToken&&all.length<maxResults);
-  return all.slice(0,maxResults);
+    try{
+      const places=await fetchSingleQuery(mapsKey,query,suburb);
+      for(const p of places){
+        const key=(p.displayName?.text||'').toLowerCase().trim();
+        if(key&&!seen.has(key)){
+          seen.add(key);
+          all.push(p);
+        }
+      }
+      // Small delay between queries to avoid rate limiting
+      if(queries.indexOf(query)<queries.length-1)await new Promise(r=>setTimeout(r,500));
+    }catch(e){
+      // If one query fails, continue with next
+      console.warn(`Maps query failed: ${query}`,e.message);
+    }
+  }
+  return all;
 }
 
 // ─── Multi-source enrichment pipeline ────────────────────────────────────────
@@ -829,7 +859,7 @@ async function runSearch(forcedPc){
 
   const info=getPcInfo(pc);
   const suburb=info.suburb||pc,state=info.state||'';
-  const industry=getIndustry(),batch=parseInt(document.getElementById('batch').value);
+  const industry=getIndustry(),batch=20;
 
   clearProgress();
   setStatus(`Maps: ${industry} in ${suburb} (${pc})...`,'active');
