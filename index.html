@@ -225,7 +225,17 @@
       <label class="radio-opt"><input type="radio" name="targetType" value="total"> Total leads</label>
       <label class="radio-opt"><input type="radio" name="targetType" value="mobile"> Confirmed mobiles</label>
     </div>
-    <span style="font-size:11px;color:var(--muted);margin-left:auto">Queue stops when target hit &nbsp;·&nbsp; <span id="dbMobileCount" style="color:var(--accent)">—</span> mobiles already in DB</span>
+    <div style="display:flex;align-items:center;gap:8px;margin-left:16px">
+      <label style="font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);white-space:nowrap">Timeout per lead:</label>
+      <select id="timeoutSelect" style="width:auto;height:32px;font-size:11px;padding:5px 8px">
+        <option value="15">15s — fast/cheap</option>
+        <option value="20" selected>20s — balanced</option>
+        <option value="30">30s — thorough</option>
+        <option value="45">45s — deep</option>
+        <option value="60">60s — max</option>
+      </select>
+    </div>
+    <span style="font-size:11px;color:var(--muted);margin-left:auto">Queue stops when target hit &nbsp;·&nbsp; <span id="dbMobileCount" style="color:var(--accent)">—</span> mobiles in DB</span>
   </div>
 
   <!-- Export filter -->
@@ -305,12 +315,25 @@
 
 <!-- ═══ NAME FIX ══════════════════════════════════════════════════════════════ -->
 <div class="pane" id="pane-namefix">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-    <div style="font-size:12px;color:var(--muted)">Leads in Supabase with a mobile but no contact name. Claude looks up the principal name only — fast and cheap.</div>
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <div class="field-wrap" style="min-width:240px">
+        <label>Filter leads by missing data</label>
+        <select id="nfFilter" onchange="loadNameFix()">
+          <option value="mobile_no_name">Has mobile — missing name</option>
+          <option value="name_no_mobile">Has name — missing mobile</option>
+          <option value="name_email_no_mobile">Has name + email — missing mobile</option>
+          <option value="email_no_name_no_mobile">Has email — missing name + mobile</option>
+          <option value="no_mobile">All leads missing mobile</option>
+          <option value="no_name">All leads missing name</option>
+        </select>
+      </div>
+      <div style="font-size:11px;color:var(--muted);align-self:flex-end;padding-bottom:2px" id="nfFilterDesc">Leads with mobile but no principal name</div>
+    </div>
     <div style="display:flex;gap:8px">
       <button class="btn-ghost" onclick="loadNameFix()">↺ Load from DB</button>
-      <button class="btn-ghost" onclick="runNameFix()" id="runNameFixBtn" disabled>Run Name Lookup ›</button>
-      <button class="btn-ghost" onclick="exportNameFixCSV()" id="exportNameFixBtn" disabled>Export Fixed → Zoho</button>
+      <button class="btn-ghost" onclick="runNameFix()" id="runNameFixBtn" disabled>Run Lookup ›</button>
+      <button class="btn-ghost" onclick="exportNameFixCSV()" id="exportNameFixBtn" disabled>Export → Zoho</button>
     </div>
   </div>
   <div class="status-bar"><div class="dot" id="nfDot"></div><span id="nfStatus">Click "Load from DB" to find leads missing names.</span></div>
@@ -318,12 +341,12 @@
     <table style="min-width:800px;width:100%;border-collapse:collapse;table-layout:fixed">
       <colgroup><col style="width:210px"/><col style="width:130px"/><col style="width:180px"/><col style="width:150px"/><col style="width:80px"/><col style="width:50px"/></colgroup>
       <thead><tr>
-        <th style="background:var(--surface);text-align:left;padding:9px 12px;font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);border-bottom:1px solid var(--border)">Company</th>
-        <th style="background:var(--surface);text-align:left;padding:9px 12px;font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);border-bottom:1px solid var(--border)">Mobile</th>
-        <th style="background:var(--surface);text-align:left;padding:9px 12px;font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);border-bottom:1px solid var(--border)">Name found</th>
-        <th style="background:var(--surface);text-align:left;padding:9px 12px;font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);border-bottom:1px solid var(--border)">Website</th>
-        <th style="background:var(--surface);text-align:left;padding:9px 12px;font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);border-bottom:1px solid var(--border)">Status</th>
-        <th style="background:var(--surface);border-bottom:1px solid var(--border)"></th>
+        <th style="background:var(--surface);text-align:left;padding:9px 12px;font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);border-bottom:1px solid var(--border);width:220px">Company</th>
+        <th style="background:var(--surface);text-align:left;padding:9px 12px;font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);border-bottom:1px solid var(--border);width:140px">Mobile</th>
+        <th style="background:var(--surface);text-align:left;padding:9px 12px;font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);border-bottom:1px solid var(--border);width:170px">Contact Name</th>
+        <th style="background:var(--surface);text-align:left;padding:9px 12px;font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);border-bottom:1px solid var(--border);width:160px">Email</th>
+        <th style="background:var(--surface);text-align:left;padding:9px 12px;font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);border-bottom:1px solid var(--border);width:80px">Website</th>
+        <th style="background:var(--surface);border-bottom:1px solid var(--border);width:60px"></th>
       </tr></thead>
       <tbody id="nfTableBody"><tr><td colspan="6"><div class="empty-state">Click Load from DB to begin.</div></td></tr></tbody>
     </table>
@@ -367,7 +390,11 @@
 <script>
 const SB_URL='https://ojifhwprkapdqsfsufrl.supabase.co';
 const SB_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9qaWZod3Bya2FwZHFzZnN1ZnJsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM2OTI0MjcsImV4cCI6MjA4OTI2ODQyN30.f8UZw7qCoOFG6MosRU3FCCyihphFfGh_-HzF7B5l_T4';
-const TIMEOUT_MS=30000;
+const TIMEOUT_MS=30000; // fallback only — use getTimeoutMs() at runtime
+function getTimeoutMs(){
+  const sel=document.getElementById('timeoutSelect');
+  return sel?parseInt(sel.value)*1000:30000;
+}
 
 let leads=[],manualLeads=[],currentPage=0,isRunning=false,stopRequested=false;
 const PAGE_SIZE=20,PC_CACHE={};
@@ -490,15 +517,16 @@ function targetHit(){
 function isMobileNumber(num){
   if(!num||num==='—')return false;
   const clean=num.replace(/[\s\-().+]/g,'');
-  return /^(04\d{8}|61\d{9}|\+61\d{9})$/.test(clean)||clean.startsWith('04');
+  // AU mobile: 04xxxxxxxx, or international +614xxxxxxxx, 614xxxxxxxx
+  return /^04\d{8}$/.test(clean)||/^614\d{8}$/.test(clean)||/^\+614\d{8}$/.test(clean);
 }
 
 function cleanMobile(num){
   if(!num)return'—';
   const clean=num.replace(/[\s\-().]/g,'');
-  if(clean.startsWith('614'))return'0'+clean.slice(2);
   if(clean.startsWith('+614'))return'0'+clean.slice(3);
-  return num;
+  if(clean.startsWith('614'))return'0'+clean.slice(2);
+  return num.replace(/[\s]/g,''); // preserve formatting but trim spaces
 }
 
 // ─── Address parsing ──────────────────────────────────────────────────────────
@@ -744,7 +772,7 @@ async function runSearch(forcedPc){
     document.getElementById('exportBtn').disabled=false;
     document.getElementById('selectAllBtn').disabled=false;
 
-    const needsEnrich=newLeads.filter(l=>!l.enriched&&l.website);
+    const needsEnrich=newLeads.filter(l=>!l.enriched&&l.website&&l.enrich_status!=='maps_mobile');
     setStatus(`${needsEnrich.length} leads need Claude enrichment (${mapsAutoCount} already have mobile from Maps)...`,'active');
 
     for(let i=0;i<needsEnrich.length;i++){
@@ -765,7 +793,7 @@ Return ONLY raw JSON: {"contact":"Name","title":"Title","mobile":"04xx xxx xxx",
 mobile_verified=true only if on their own website. Use "—" for missing.`;
 
       try{
-        const text=await callClaude(apiKey,prompt,TIMEOUT_MS);
+        const text=await callClaude(apiKey,prompt,getTimeoutMs());
         const match=text.replace(/```json|```/g,'').trim().match(/\{[\s\S]*?\}/);
         if(match){
           const e=JSON.parse(match[0]);
@@ -874,7 +902,7 @@ Return ONLY JSON: {"contact":"Name","title":"Title","mobile":"04xx xxx xxx","mob
 Use "—" for missing.`;
 
   try{
-    const text=await callClaude(apiKey,prompt,TIMEOUT_MS);
+    const text=await callClaude(apiKey,prompt,getTimeoutMs());
     const match=text.replace(/```json|```/g,'').trim().match(/\{[\s\S]*?\}/);
     if(match){
       const e=JSON.parse(match[0]);
@@ -967,7 +995,7 @@ Business: ${lead.company} Website: ${lead.website}
 Return ONLY JSON: {"contact":"Name","title":"Title","mobile":"04xx xxx xxx","mobile_verified":true,"email":"email@domain.com","source_url":"https://url"}
 Use "—" for missing.`;
   try{
-    const text=await callClaude(apiKey,prompt,TIMEOUT_MS);
+    const text=await callClaude(apiKey,prompt,getTimeoutMs());
     const match=text.replace(/```json|```/g,'').trim().match(/\{[\s\S]*?\}/);
     if(match){const e=JSON.parse(match[0]);lead.contact=e.contact||'—';lead.title=e.title||'—';lead.mobile=e.mobile||'—';lead.mobile_verified=!!e.mobile_verified;lead.email=e.email||'—';lead.source_url=e.source_url||lead.website;}
     lead.enrich_status=lead.mobile!=='—'?'found':'no_mobile';
@@ -1161,16 +1189,35 @@ async function updateDbMobileCount(){
 // ─── Name Fix ─────────────────────────────────────────────────────────────────
 let nfLeads=[];
 
+const NF_FILTER_DESCS={
+  'mobile_no_name':'Leads with mobile but no principal name',
+  'name_no_mobile':'Leads with name but no mobile — BDM looks up mobile',
+  'name_email_no_mobile':'Leads with name + email but no mobile',
+  'email_no_name_no_mobile':'Leads with email but missing name and mobile',
+  'no_mobile':'All leads missing a mobile number',
+  'no_name':'All leads missing a contact name'
+};
+
+const NF_QUERIES={
+  'mobile_no_name':'leads?mobile=not.is.null&contact=is.null&select=id,company,mobile,email,website,postcode,suburb,state,industry&limit=300',
+  'name_no_mobile':'leads?contact=not.is.null&mobile=is.null&select=id,company,mobile,email,website,postcode,suburb,state,industry&limit=300',
+  'name_email_no_mobile':'leads?contact=not.is.null&email=not.is.null&mobile=is.null&select=id,company,mobile,email,website,postcode,suburb,state,industry&limit=300',
+  'email_no_name_no_mobile':'leads?email=not.is.null&contact=is.null&mobile=is.null&select=id,company,mobile,email,website,postcode,suburb,state,industry&limit=300',
+  'no_mobile':'leads?mobile=is.null&select=id,company,mobile,email,website,postcode,suburb,state,industry&limit=300',
+  'no_name':'leads?contact=is.null&select=id,company,mobile,email,website,postcode,suburb,state,industry&limit=300'
+};
+
 async function loadNameFix(){
+  const filter=document.getElementById('nfFilter')?.value||'mobile_no_name';
   document.getElementById('nfDot').className='dot active';
-  document.getElementById('nfStatus').textContent='Loading nameless leads from Supabase...';
+  document.getElementById('nfStatus').textContent='Loading from Supabase...';
+  document.getElementById('nfFilterDesc').textContent=NF_FILTER_DESCS[filter]||'';
   try{
-    // Find leads with mobile but no contact name
-    const rows=await sbFetch('leads?mobile=not.is.null&contact=is.null&select=id,company,mobile,website,postcode,suburb,state,industry,run_id&limit=200');
-    nfLeads=(rows||[]).map(r=>({...r,foundName:'',foundTitle:'',status:'pending'}));
+    const rows=await sbFetch(NF_QUERIES[filter]);
+    nfLeads=(rows||[]).map(r=>({...r,foundName:r.contact||'',foundTitle:'',foundMobile:r.mobile||'',foundEmail:r.email||'',status:'pending'}));
     renderNfTable();
     document.getElementById('nfDot').className='dot done';
-    document.getElementById('nfStatus').textContent=`${nfLeads.length} leads found with mobile but no name.`;
+    document.getElementById('nfStatus').textContent=`${nfLeads.length} leads loaded.`;
     document.getElementById('runNameFixBtn').disabled=nfLeads.length===0;
     document.getElementById('exportNameFixBtn').disabled=nfLeads.length===0;
   }catch(e){
@@ -1181,26 +1228,31 @@ async function loadNameFix(){
 
 function renderNfTable(){
   const tbody=document.getElementById('nfTableBody');
-  if(nfLeads.length===0){tbody.innerHTML='<tr><td colspan="6"><div class="empty-state">No nameless leads found.</div></td></tr>';return;}
-  tbody.innerHTML=nfLeads.map((l,i)=>`
-    <tr id="nfrow-${i}">
-      <td style="padding:9px 12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);font-size:13px">${l.company}</td>
-      <td style="padding:9px 12px;color:var(--accent);font-size:12px">${l.mobile}</td>
-      <td style="padding:9px 12px">
-        ${l.foundName
-          ?`<div style="color:var(--text);font-size:13px">${l.foundName}</div>${l.foundTitle?`<div style="color:var(--muted);font-size:11px">${l.foundTitle}</div>`:''}`
-          :`<span style="color:var(--muted);font-size:11px">${l.status==='searching'?'searching...':l.status==='not_found'?'not found':'—'}</span>`}
+  if(nfLeads.length===0){tbody.innerHTML='<tr><td colspan="6"><div class="empty-state">No leads found for this filter.</div></td></tr>';return;}
+  const td='padding:9px 12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+  tbody.innerHTML=nfLeads.map((l,i)=>{
+    const statusColor=l.status==='done'?'color:var(--accent2)':l.status==='not_found'?'color:var(--warning)':'color:var(--muted)';
+    const nameDisplay=l.foundName?`<div style="color:var(--text);font-size:13px">${l.foundName}</div>${l.foundTitle?`<div style="color:var(--muted);font-size:11px">${l.foundTitle}</div>`:''}`:`<span style="color:var(--muted);font-size:11px">${l.status==='searching'?'searching...':l.status==='not_found'?'not found':'—'}</span>`;
+    return`<tr id="nfrow-${i}">
+      <td style="${td};color:var(--text);font-size:13px" title="${l.company}">${l.company}<div style="font-size:10px;color:var(--muted)">${l.suburb||''} ${l.state||''}</div></td>
+      <td style="${td}">
+        ${l.foundMobile?`<div style="color:var(--accent);font-size:12px">${l.foundMobile}</div>`:l.mobile?`<div style="color:var(--accent);font-size:12px">${l.mobile}</div>`:`<input style="background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:11px;padding:4px 8px;border-radius:3px;width:130px;outline:none" placeholder="04xx xxx xxx" onchange="updateNfField(${i},'mobile',this.value)"/>`}
       </td>
-      <td style="padding:9px 12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-        ${l.website?`<a href="${l.website}" target="_blank" style="font-size:11px;color:var(--accent)">↗ ${l.website.replace(/https?:\/\//,'').slice(0,30)}</a>`:'<span style="color:var(--muted);font-size:11px">no website</span>'}
+      <td style="${td}">${nameDisplay}</td>
+      <td style="${td};color:var(--muted);font-size:11px">${l.foundEmail||l.email||'—'}</td>
+      <td style="${td}">
+        ${l.website?`<a href="${l.website}" target="_blank" style="font-size:11px;color:var(--accent)">↗ site</a>`:'<span style="color:var(--muted);font-size:11px">no site</span>'}
       </td>
-      <td style="padding:9px 12px">
-        <span style="font-size:10px;padding:2px 6px;border-radius:3px;${l.status==='done'?'background:rgba(181,240,160,.12);color:var(--accent2)':l.status==='not_found'?'background:rgba(240,192,112,.1);color:var(--warning)':'color:var(--muted)'}">${l.status}</span>
+      <td style="padding:9px 12px;display:flex;gap:3px;align-items:center">
+        <span style="font-size:10px;${statusColor}">${l.status==='done'?'✓':l.status==='not_found'?'~':l.status==='searching'?'…':'·'}</span>
+        <button style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:12px" onclick="runSingleNf(${i})" title="Look up">↺</button>
       </td>
-      <td style="padding:9px 12px">
-        <button style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:12px" onclick="runSingleNf(${i})" title="Look up name">↺</button>
-      </td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
+}
+
+function updateNfField(idx,field,val){
+  if(nfLeads[idx])nfLeads[idx]['found'+field.charAt(0).toUpperCase()+field.slice(1)]=val.trim();
 }
 
 async function runNameFix(){
@@ -1224,7 +1276,7 @@ Return ONLY raw JSON: {"contact":"Full Name","title":"Their Title"}
 Use "—" if genuinely not findable.`;
     
     try{
-      const text=await callClaude(apiKey,prompt,25000,2);
+      const text=await callClaude(apiKey,prompt,getTimeoutMs(),2);
       const match=text.replace(/```json|```/g,'').trim().match(/\{[\s\S]*?\}/);
       if(match){
         const e=JSON.parse(match[0]);
@@ -1257,7 +1309,7 @@ Business: ${lead.company} Website: ${lead.website}
 Find team/about page, identify most senior person.
 Return ONLY JSON: {"contact":"Full Name","title":"Title"} — use "—" if not found.`;
   try{
-    const text=await callClaude(apiKey,prompt,25000,2);
+    const text=await callClaude(apiKey,prompt,getTimeoutMs(),2);
     const match=text.replace(/```json|```/g,'').trim().match(/\{[\s\S]*?\}/);
     if(match){const e=JSON.parse(match[0]);if(e.contact&&e.contact!=='—'){lead.foundName=e.contact;lead.foundTitle=e.title||'';lead.status='done';}else lead.status='not_found';}
     else lead.status='not_found';
