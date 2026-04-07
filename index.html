@@ -642,6 +642,113 @@ async function fetchPlaces(mapsKey,industry,suburb,maxResults){
   return all.slice(0,maxResults);
 }
 
+// ─── Multi-source enrichment pipeline ────────────────────────────────────────
+// Stage 1: Claude searches ALL free directories in one call (YP, TrueLocal, WhitePages, ABN)
+// Stage 2: If no mobile found, Claude visits website
+// This is cheaper than separate fetches (CORS blocked anyway) and faster than two Claude calls
+
+async function enrichLead(apiKey,lead,industry,suburb,state){
+  if(!apiKey)return{mobile:null,contact:null,title:null,email:null,source:null,free:false};
+  const company=lead.company;
+  const sub=lead.cleanSuburb||suburb||'';
+  const st=lead.state||state||'';
+
+  // Stage 1: Search free directories first — one Claude call, no website visit
+  const dirPrompt=`Search these free Australian directories for the owner/principal/director of this ${industry} business and their mobile number:
+- yellowpages.com.au
+- truelocal.com.au  
+- whitepages.com.au
+- abr.business.gov.au (for registered owner name)
+
+Business: ${company}
+Location: ${sub}, ${st}
+
+Search each directory. Look for:
+1. The most senior person's name (owner, principal, director, licensee, founder)
+2. Their mobile number (04xx format)
+3. Their email address
+
+If you find a mobile on any of these directories, that is enough — stop and return it.
+Return ONLY raw JSON: {"contact":"Name or null","title":"Title or null","mobile":"04xx xxx xxx or null","email":"email or null","source":"yellowpages/truelocal/whitepages/abn/none"}`;
+
+  try{
+    const text1=await callClaude(apiKey,dirPrompt,20000,1);
+    const match1=text1.replace(/```json|```/g,'').trim().match(/\{[\s\S]*?\}/);
+    if(match1){
+      const d=JSON.parse(match1[0]);
+      if(d.mobile&&d.mobile!=='null'&&d.mobile!=='—'){
+        return{
+          contact:d.contact&&d.contact!=='null'?d.contact:null,
+          title:d.title&&d.title!=='null'?d.title:null,
+          mobile:d.mobile,email:d.email&&d.email!=='null'?d.email:null,
+          source:d.source||'directory',free:true
+        };
+      }
+      // Got a name but no mobile — use it in Stage 2
+      if(d.contact&&d.contact!=='null'&&d.contact!=='—'){
+        const partialName=d.contact;
+
+        // Stage 2: Claude visits website with name hint
+        if(lead.website){
+          const webPrompt=`Find the direct mobile number for ${partialName}, who is the owner/principal/director of this Australian ${industry}.
+Business: ${company}
+Website: ${lead.website}
+Location: ${sub}, ${st}
+
+Visit the website, find the team/about/contact page.
+Look specifically for ${partialName}'s mobile (04xx format).
+Also get their email and title if shown.
+Return ONLY raw JSON: {"contact":"${partialName}","title":"Title or null","mobile":"04xx xxx xxx or null","mobile_verified":true,"email":"email or null"}`;
+          try{
+            const text2=await callClaude(apiKey,webPrompt,getTimeoutMs(),1);
+            const match2=text2.replace(/```json|```/g,'').trim().match(/\{[\s\S]*?\}/);
+            if(match2){
+              const w=JSON.parse(match2[0]);
+              return{
+                contact:w.contact||partialName,title:w.title&&w.title!=='null'?w.title:null,
+                mobile:w.mobile&&w.mobile!=='null'&&w.mobile!=='—'?w.mobile:null,
+                email:w.email&&w.email!=='null'?w.email:null,
+                source:'claude_web',free:false
+              };
+            }
+          }catch(e2){return{contact:partialName,title:null,mobile:null,email:null,source:'directory_name_only',free:true,claudeError:e2.message};}
+        }
+        return{contact:partialName,title:null,mobile:null,email:null,source:'directory_name_only',free:true};
+      }
+    }
+  }catch(e1){/* Stage 1 failed — fall through to Stage 2 */}
+
+  // Stage 2: Full Claude enrichment (website visit)
+  if(!lead.website)return{mobile:null,contact:null,title:null,email:null,source:null,free:false};
+  try{
+    const prompt=`Find the owner/principal/director/founder/CEO/MD/licensee-in-charge of this Australian ${industry} and their direct mobile number.
+Business: ${company}
+Website: ${lead.website}
+Location: ${sub}, ${st}
+1. Visit website, find team/about/people page
+2. Most senior person: Owner, Principal, Director, Founder, CEO, MD, LIC, Partner
+3. Get mobile (04xx xxx xxx) — must be their direct mobile not office landline
+4. Get email if shown
+Return ONLY raw JSON: {"contact":"Name","title":"Title","mobile":"04xx xxx xxx","mobile_verified":true,"email":"email@domain.com","source_url":"https://url"}
+Use "—" for missing.`;
+    const text=await callClaude(apiKey,prompt,getTimeoutMs());
+    const match=text.replace(/```json|```/g,'').trim().match(/\{[\s\S]*?\}/);
+    if(match){
+      const e=JSON.parse(match[0]);
+      return{
+        contact:e.contact&&e.contact!=='—'?e.contact:null,
+        title:e.title&&e.title!=='—'?e.title:null,
+        mobile:e.mobile&&e.mobile!=='—'?e.mobile:null,
+        email:e.email&&e.email!=='—'?e.email:null,
+        source:'claude',free:false
+      };
+    }
+  }catch(err){
+    return{mobile:null,contact:null,title:null,email:null,source:'error',free:false,claudeError:err.message==='TIMEOUT'?'timeout':err.message.slice(0,50)};
+  }
+  return{mobile:null,contact:null,title:null,email:null,source:null,free:false};
+}
+
 // ─── Claude with timeout ──────────────────────────────────────────────────────
 async function callClaude(apiKey,prompt,timeoutMs,retries=3){
   for(let attempt=0;attempt<retries;attempt++){
@@ -781,40 +888,30 @@ async function runSearch(forcedPc){
       lead.enriching=true;lead.enrich_status='enriching';renderTable();
       const prog=addProgress(`[${i+1}/${needsEnrich.length}] ${lead.company}`,'active');
 
-      const prompt=`Find the owner/principal/director/founder/CEO/MD/licensee-in-charge of this Australian ${industry} and their direct mobile number.
-Business: ${lead.company}
-Website: ${lead.website}
-Location: ${suburb}, ${state}
-1. Visit website, find team/about/people page
-2. Most senior person: Owner, Principal, Director, Founder, CEO, MD, LIC, Partner
-3. Get mobile (04xx xxx xxx) from their profile
-4. Get email if shown
-Return ONLY raw JSON: {"contact":"Name","title":"Title","mobile":"04xx xxx xxx","mobile_verified":true,"email":"email@domain.com","source_url":"https://url"}
-mobile_verified=true only if on their own website. Use "—" for missing.`;
-
       try{
-        const text=await callClaude(apiKey,prompt,getTimeoutMs());
-        const match=text.replace(/```json|```/g,'').trim().match(/\{[\s\S]*?\}/);
-        if(match){
-          const e=JSON.parse(match[0]);
-          lead.contact=e.contact||'—';lead.title=e.title||'—';
-          lead.mobile=e.mobile||'—';lead.mobile_verified=!!e.mobile_verified;
-          lead.email=e.email||'—';lead.source_url=e.source_url||lead.website;
-        }
-        lead.enrich_status=lead.mobile!=='—'?'found':'no_mobile';
+        const result=await enrichLead(apiKey,lead,industry,suburb,state);
+        lead.contact=result.contact||'—';
+        lead.title=result.title||'—';
+        lead.mobile=result.mobile||'—';
+        lead.mobile_verified=!!result.mobile&&result.source!=='claude';
+        lead.email=result.email||'—';
+        lead.enrich_source=result.source||'none';
+        lead.enrich_status=lead.mobile!=='—'?'found':result.claudeError?result.claudeError==='timeout'?'timeout':'error':'no_mobile';
+
+        const sourceLabel=result.free?`⚡ ${result.source||'free'}`:result.source==='claude'?'claude':'—';
         prog.className='prog-item done';
         prog.querySelector('.tick').textContent='✓';
-        prog.querySelector('span:last-child').textContent=`${lead.company} — ${lead.contact}${lead.mobile!=='—'?' · '+lead.mobile:' · no mobile → manual'}`;
+        prog.querySelector('span:last-child').textContent=`${lead.company} — ${lead.contact}${lead.mobile!=='—'?' · '+lead.mobile+' ('+sourceLabel+')':' · no mobile → manual'}`;
       }catch(err){
-        lead.enrich_status=err.message==='TIMEOUT'?'timeout':'error';
+        lead.enrich_status='error';
         prog.className='prog-item err';
-        prog.querySelector('.tick').textContent=err.message==='TIMEOUT'?'⏱':'!';
-        prog.querySelector('span:last-child').textContent=`${lead.company} — ${err.message==='TIMEOUT'?'timed out':err.message.slice(0,55)}`;
+        prog.querySelector('.tick').textContent='!';
+        prog.querySelector('span:last-child').textContent=`${lead.company} — error: ${err.message.slice(0,50)}`;
       }
       lead.enriched=true;lead.enriching=false;
       pushToManual(lead);
       renderTable();updateCounts();updateManualTabBadge();
-      if(i<needsEnrich.length-1&&!stopRequested&&!targetHit())await new Promise(r=>setTimeout(r,4000));
+      if(i<needsEnrich.length-1&&!stopRequested&&!targetHit())await new Promise(r=>setTimeout(r,2000));
     }
 
     // Also push maps-mobile leads that have no name to manual for name lookup
