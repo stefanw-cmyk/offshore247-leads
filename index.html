@@ -240,13 +240,15 @@
 
   <div class="warn-bar" id="warnBar">⚠ <span id="warnMsg"></span></div>
 
-  <div class="stats-row">
+  <div class="stats-row" style="grid-template-columns:repeat(8,1fr)">
     <div class="stat-card"><div class="val" id="statTotal">0</div><div class="lbl">Found</div></div>
     <div class="stat-card"><div class="val" id="statSkipped">0</div><div class="lbl">Maps→Mobile <span class="free-chip">free</span></div></div>
     <div class="stat-card"><div class="val" id="statEnriched">0</div><div class="lbl">Claude enriched</div></div>
     <div class="stat-card"><div class="val" id="statMobile">0</div><div class="lbl">Mobiles</div></div>
     <div class="stat-card"><div class="val" id="statEmail">0</div><div class="lbl">Emails</div></div>
     <div class="stat-card"><div class="val" id="statManual">0</div><div class="lbl">Manual Queue</div></div>
+    <div class="stat-card" style="border-color:rgba(240,112,112,.3)"><div class="val" id="statRejected" style="color:var(--danger)">0</div><div class="lbl">Rejected mobiles</div></div>
+    <div class="stat-card" style="border-color:rgba(240,192,112,.3)"><div class="val" id="statWrongState" style="color:var(--warning)">0</div><div class="lbl">Wrong state</div></div>
   </div>
 
   <div class="queue-bar" id="queueBar">
@@ -766,10 +768,17 @@ Use "—" for missing.`;
     const match=text.replace(/```json|```/g,'').trim().match(/\{[\s\S]*?\}/);
     if(match){
       const e=JSON.parse(match[0]);
+      const rawMobile=e.mobile&&e.mobile!=='—'?e.mobile:null;
+      const sourceUrl=e.source_url&&e.source_url!=='—'&&e.source_url.length>5?e.source_url:null;
+      // RULE: Claude mobile MUST have a source URL — no source = reject mobile
+      const verifiedMobile=rawMobile&&sourceUrl?validateMobile(rawMobile):null;
+      if(rawMobile&&!sourceUrl)console.warn(`Rejected mobile ${rawMobile} for ${lead.company} — no source URL`);
+      if(rawMobile&&!verifiedMobile&&sourceUrl)console.warn(`Rejected malformed mobile ${rawMobile} for ${lead.company}`);
       return{
         contact:e.contact&&e.contact!=='—'?e.contact:null,
         title:e.title&&e.title!=='—'?e.title:null,
-        mobile:e.mobile&&e.mobile!=='—'?e.mobile:null,
+        mobile:verifiedMobile||null,
+        source_url:sourceUrl,
         email:e.email&&e.email!=='—'?e.email:null,
         source:'claude',free:false
       };
@@ -778,6 +787,20 @@ Use "—" for missing.`;
     return{mobile:null,contact:null,title:null,email:null,source:'error',free:false,claudeError:err.message==='TIMEOUT'?'timeout':err.message.slice(0,50)};
   }
   return{mobile:null,contact:null,title:null,email:null,source:null,free:false};
+}
+
+// ─── Mobile validation ─────────────────────────────────────────────────────────
+function validateMobile(raw){
+  if(!raw)return null;
+  let m=raw.replace(/\s|-|\(|\)/g,'').trim();
+  // Fix missing leading zero (Zoho strips it — 9 digits starting with 4)
+  if(m.length===9&&m.startsWith('4'))m='0'+m;
+  // Handle +614x format
+  if(m.startsWith('+614'))m='0'+m.slice(3);
+  if(m.startsWith('614'))m='0'+m.slice(2);
+  // Must be 10 digits starting with 04
+  if(!/^04\d{8}$/.test(m))return null;
+  return m;
 }
 
 // ─── Claude with timeout ──────────────────────────────────────────────────────
@@ -870,14 +893,27 @@ async function runSearch(forcedPc){
     const places=await fetchPlaces(mapsKey,industry,suburb,batch);
     addProgress(`${places.length} companies from Google Maps`,'done');
 
-    // Dedup
-    let existing=new Set();
-    try{const rows=await sbFetch(`leads?postcode=eq.${pc}&industry=ilike.${encodeURIComponent(industry)}&select=company`);existing=new Set((rows||[]).map(r=>r.company.toLowerCase().trim()));}catch{}
+    // Dedup — check both company name AND mobile against entire leads table (not just this postcode)
+    let existingCompanies=new Set();
+    let existingMobiles=new Set();
+    try{
+      const compRows=await sbFetch(`leads?postcode=eq.${pc}&industry=ilike.${encodeURIComponent(industry)}&select=company`);
+      existingCompanies=new Set((compRows||[]).map(r=>r.company.toLowerCase().trim()));
+      // Check mobiles globally across ALL runs to prevent cross-postcode duplicates
+      const mobileRows=await sbFetch(`leads?mobile=not.is.null&select=mobile&limit=5000`);
+      existingMobiles=new Set((mobileRows||[]).map(r=>(r.mobile||'').replace(/\s/g,'')));
+    }catch{}
 
     let skipped=0;
     const newLeads=places.filter(p=>{
       const name=(p.displayName?.text||'').toLowerCase().trim();
-      if(existing.has(name)){skipped++;return false;}return true;
+      const phone=p.nationalPhoneNumber||'';
+      const mobile=isMobileNumber(phone)?validateMobile(phone):null;
+      // Skip if company already in DB for this postcode
+      if(existingCompanies.has(name)){skipped++;return false;}
+      // Skip if mobile already exists anywhere in DB
+      if(mobile&&existingMobiles.has(mobile.replace(/\s/g,''))){skipped++;return false;}
+      return true;
     }).map((p,i)=>{
       const mapsPhone=p.nationalPhoneNumber||'—';
       const rawAddress=p.shortFormattedAddress||p.formattedAddress||'';
@@ -885,18 +921,22 @@ async function runSearch(forcedPc){
       const addrState=extractState(rawAddress)||state;
       const addrPostcode=extractPostcode(rawAddress)||pc;
       const mapsIsMobile=isMobileNumber(mapsPhone);
+      const validatedMapsMobile=mapsIsMobile?validateMobile(mapsPhone):null;
+      // State check: flag if company state doesn't match postcode state
+      const stateMatch=!addrState||!state||addrState===state;
       return{
         id:Date.now()+i,selected:true,excluded:false,
         company:p.displayName?.text||'—',website:p.websiteUri||null,
         maps_phone:mapsPhone,rawAddress,cleanSuburb,state:addrState,postcode:addrPostcode,
         suburb:cleanSuburb,city:cleanSuburb,industry,
         contact:'—',title:'—',
-        mobile:mapsIsMobile?cleanMobile(mapsPhone):'—',
-        mobile_verified:mapsIsMobile,
-        mobile_source:mapsIsMobile?'maps':'—',
+        mobile:validatedMapsMobile||'—',
+        mobile_verified:!!validatedMapsMobile,
+        mobile_source:validatedMapsMobile?'maps':'—',
         email:'—',source_url:'—',
-        enriched:mapsIsMobile,enriching:false,
-        enrich_status:mapsIsMobile?'maps_mobile':'pending'
+        enriched:!!validatedMapsMobile,enriching:false,
+        enrich_status:validatedMapsMobile?'maps_mobile':'pending',
+        wrong_state:!stateMatch
       };
     });
 
@@ -923,16 +963,19 @@ async function runSearch(forcedPc){
         const result=await enrichLead(apiKey,lead,industry,suburb,state);
         lead.contact=result.contact||'—';
         lead.title=result.title||'—';
-        lead.mobile=result.mobile||'—';
-        lead.mobile_verified=!!result.mobile&&result.source!=='claude';
+        // Validate mobile — fix leading zero, reject if malformed
+        const validMobile=result.mobile?validateMobile(result.mobile):null;
+        lead.mobile=validMobile||'—';
+        lead.mobile_verified=!!validMobile&&result.source!=='claude';
+        lead.source_url=result.source_url||'—';
         lead.email=result.email||'—';
         lead.enrich_source=result.source||'none';
-        lead.enrich_status=lead.mobile!=='—'?'found':result.claudeError?result.claudeError==='timeout'?'timeout':'error':'no_mobile';
+        lead.enrich_status=validMobile?'found':result.claudeError?result.claudeError==='timeout'?'timeout':'error':'no_mobile';
 
         const sourceLabel=result.free?`⚡ ${result.source||'free'}`:result.source==='claude'?'claude':'—';
         prog.className='prog-item done';
         prog.querySelector('.tick').textContent='✓';
-        prog.querySelector('span:last-child').textContent=`${lead.company} — ${lead.contact}${lead.mobile!=='—'?' · '+lead.mobile+' ('+sourceLabel+')':' · no mobile → manual'}`;
+        prog.querySelector('span:last-child').textContent=`${lead.company} — ${lead.contact}${validMobile?' · '+validMobile+' ('+sourceLabel+')':result.mobile&&!validMobile?' · ⚠ rejected mobile ('+result.mobile+')':' · no mobile → manual'}`;
       }catch(err){
         lead.enrich_status='error';
         prog.className='prog-item err';
@@ -955,7 +998,9 @@ async function runSearch(forcedPc){
     try{
       const runId=await saveRun(pc,suburb,state,industry,enriched.length,mCount,eCount,runBy);
       if(runId)await saveLeads(runId,enriched,pc,suburb,state,industry);
-      addProgress(`Saved to Supabase`,'done');
+      const wrongStateCount=newLeads.filter(l=>l.wrong_state).length;
+      if(wrongStateCount>0)addProgress(`⚠ ${wrongStateCount} wrong-state leads flagged (not matching ${state})`, 'err');
+      addProgress(`Saved to Supabase — ${skipped} duplicates skipped`,'done');
     }catch(dbErr){addProgress(`DB save issue: ${dbErr.message.slice(0,60)}`,'err');}
 
     setStatus(`${suburb} done — ${mCount} mobiles (${mapsAutoCount} from Maps, ${mCount-mapsAutoCount} from Claude).`,'done');
@@ -1068,6 +1113,7 @@ function renderTable(){
   const totalPages=Math.ceil(leads.length/PAGE_SIZE);
   tbody.innerHTML=page.map(l=>{
     const si=l.enriching?'<span class="spinner"></span>'
+      :l.wrong_state?'<span style="color:var(--warning);font-size:10px" title="Wrong state — company not in searched state">⚠ </span>'
       :l.enrich_status==='found'?'<span style="color:var(--accent);font-size:10px">✓ </span>'
       :l.enrich_status==='maps_mobile'?'<span style="color:var(--accent2);font-size:10px">⚡ </span>'
       :l.enrich_status==='no_mobile'?'<span style="color:var(--warning);font-size:10px">~ </span>'
@@ -1101,6 +1147,8 @@ function renderTable(){
   document.getElementById('statMobile').textContent=leads.filter(l=>l.mobile!=='—').length;
   document.getElementById('statEmail').textContent=leads.filter(l=>l.email!=='—').length;
   document.getElementById('statManual').textContent=manualLeads.length;
+  document.getElementById('statRejected').textContent=leads.filter(l=>l.mobile_rejected).length;
+  document.getElementById('statWrongState').textContent=leads.filter(l=>l.wrong_state).length;
 }
 
 function toggleSelect(id,checked){const l=leads.find(l=>l.id===id);if(l)l.selected=checked;updateCounts();}
@@ -1217,19 +1265,45 @@ function downloadCSV(rows,filename){
 function exportCSV(){
   const filter=document.querySelector('input[name="cf"]:checked').value;
   let toExport=leads.filter(l=>l.selected&&!l.excluded);
-  if(filter==='mobile')toExport=toExport.filter(l=>l.mobile!=='—');
-  else if(filter==='named_mobile')toExport=toExport.filter(l=>l.mobile!=='—'&&l.contact!=='—');
+  
+  // HARD BLOCKS — these cannot export regardless of filter
+  const noName=toExport.filter(l=>!l.contact||l.contact==='—').length;
+  const noMobile=toExport.filter(l=>!l.mobile||l.mobile==='—').length;
+  const wrongState=toExport.filter(l=>l.wrong_state).length;
+  
+  // Remove hard-blocked leads
+  toExport=toExport.filter(l=>{
+    if(!l.contact||l.contact==='—')return false; // No name = blocked
+    if(!l.mobile||l.mobile==='—')return false;   // No mobile = blocked
+    return true;
+  });
+  
+  // Apply additional filter
+  if(filter==='named_mobile')toExport=toExport.filter(l=>l.mobile!=='—'&&l.contact!=='—');
   else if(filter==='email')toExport=toExport.filter(l=>l.email!=='—');
-  else if(filter==='any_phone')toExport=toExport.filter(l=>l.mobile!=='—'||l.maps_phone!=='—');
-  if(toExport.length===0){setStatus('No leads match the export filter.','');return;}
+  
+  // Warn about wrong-state leads included
+  const wrongStateIncluded=toExport.filter(l=>l.wrong_state).length;
+  
+  if(toExport.length===0){
+    setStatus(`Nothing to export. Blocked: ${noName} no name, ${noMobile} no mobile.`,'error');
+    return;
+  }
+  
+  let warnings=[];
+  if(noName>0)warnings.push(`${noName} blocked (no name)`);
+  if(noMobile>0)warnings.push(`${noMobile} blocked (no mobile)`);
+  if(wrongStateIncluded>0)warnings.push(`⚠ ${wrongStateIncluded} wrong-state leads included`);
+  
   const industry=getIndustry(),pc=document.getElementById('postcode').value.trim(),date=new Date().toISOString().slice(0,10);
   const headers=['Last Name','First Name','Title','Company','Phone','Mobile','Email','Website','City','Province (State)','Country','Industry','Lead Source','Lead Status','Campaign Name','Service Interest','Estimated Headcount Needed','Description'];
   const rows=toExport.map(l=>{
+    const mobile=validateMobile(l.mobile)||l.mobile; // Re-validate on export
     const parts=l.contact&&l.contact!=='—'?l.contact.trim().split(/\s+/):[];
-    return[parts.length>1?parts[parts.length-1]:'',parts.length>1?parts.slice(0,-1).join(' '):(parts[0]||''),l.title!=='—'?l.title:'',l.company,l.maps_phone!=='—'?l.maps_phone:'',l.mobile!=='—'?l.mobile:'',l.email!=='—'?l.email:'',l.website||'',l.cleanSuburb||l.suburb,l.state||extractState(l.suburb),'Australia',mapIndustry(l.industry||industry),'Lead Prospector — Offshore 24/7','New','','','',''];
+    return[parts.length>1?parts[parts.length-1]:'',parts.length>1?parts.slice(0,-1).join(' '):(parts[0]||''),l.title!=='—'?l.title:'',l.company,l.maps_phone!=='—'?l.maps_phone:'',mobile!=='—'?mobile:'',l.email!=='—'?l.email:'',l.website||'',l.cleanSuburb||l.suburb,l.state||extractState(l.suburb),'Australia',mapIndustry(l.industry||industry),'Lead Prospector — Offshore 24/7','New','','','',''];
   });
   downloadCSV([headers,...rows],`zoho_leads_${pc}_${industry.replace(/\s/g,'_')}_${date}.csv`);
-  setStatus(`Exported ${toExport.length} leads → Zoho ready.`,'done');
+  setStatus(`Exported ${toExport.length} leads → Zoho ready. ${warnings.join(' · ')}`,warnings.length?'':'done');
 }
 
 function exportManualCSV(){
