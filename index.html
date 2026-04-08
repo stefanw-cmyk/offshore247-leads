@@ -357,6 +357,7 @@
       <select id="covIndustry" onchange="renderCoverage()"><option value="">All industries</option></select>
     </div>
     <button class="btn-ghost" onclick="loadCoverage()" style="margin-top:auto">↺ Refresh</button>
+    <button class="btn-ghost" onclick="exportAllFromDB()" style="margin-top:auto;background:rgba(240,112,112,.1);border-color:var(--danger);color:var(--danger)">⬇ Export ALL from DB (audit)</button>
     <span style="margin-top:auto;font-size:11px;color:var(--muted)" id="covRefresh"></span>
   </div>
   <div class="status-bar"><div class="dot" id="covDot"></div><span id="covStatus">Click Refresh to load coverage data.</span></div>
@@ -1460,6 +1461,91 @@ function exportNameFixCSV(){
 }
 
 // switchTab handles all tabs including namefix and prospect
+
+// ─── Export ALL leads from Supabase for audit ─────────────────────────────────
+async function exportAllFromDB(){
+  document.getElementById('covStatus').textContent='Fetching all leads from Supabase...';
+  document.getElementById('covDot').className='dot active';
+  try{
+    // Fetch in batches of 1000
+    const allLeads=[];
+    let offset=0;
+    while(true){
+      const rows=await sbFetch(`leads?select=id,company,contact,title,mobile,mobile_verified,email,maps_phone,enrich_status,source_url,suburb,city,state,industry,created_at&order=created_at.desc&limit=1000&offset=${offset}`);
+      if(!rows||rows.length===0)break;
+      allLeads.push(...rows);
+      if(rows.length<1000)break;
+      offset+=1000;
+    }
+
+    document.getElementById('covStatus').textContent=`Building audit CSV for ${allLeads.length} leads...`;
+
+    const headers=[
+      'Company','Contact','Title','Mobile','Mobile Verified',
+      'Maps Phone','Enrich Status','Source URL','Email',
+      'Suburb','State','Industry','Created',
+      'VERDICT','REASON'
+    ];
+
+    const rows=allLeads.map(l=>{
+      // Determine verdict
+      let verdict='CHECK';
+      let reason='';
+
+      const mobile=l.mobile||'';
+      const mapsPhone=l.maps_phone||'';
+      const enrich=l.enrich_status||'';
+      const sourceUrl=l.source_url||'';
+
+      if(enrich==='maps_mobile'){
+        verdict='VERIFIED';
+        reason='Mobile came directly from Google Maps listing';
+      } else if(mobile&&mapsPhone&&mobile===mapsPhone){
+        verdict='VERIFIED';
+        reason='Mobile matches Google Maps phone number';
+      } else if(mobile&&sourceUrl&&sourceUrl!=='—'&&sourceUrl.length>5){
+        verdict='LIKELY REAL';
+        reason='Claude found mobile with source URL: '+sourceUrl;
+      } else if(mobile&&!sourceUrl&&enrich==='found'){
+        verdict='SUSPECT';
+        reason='Claude returned mobile with no source URL - may be hallucinated';
+      } else if(!mobile){
+        verdict='NO MOBILE';
+        reason='No mobile number found';
+      } else {
+        verdict='CHECK';
+        reason='Unknown source - verify manually';
+      }
+
+      return[
+        l.company||'',l.contact||'',l.title||'',
+        l.mobile||'',l.mobile_verified?'YES':'NO',
+        l.maps_phone||'',l.enrich_status||'',l.source_url||'',
+        l.email||'',l.suburb||'',l.state||'',l.industry||'',
+        l.created_at?new Date(l.created_at).toLocaleDateString('en-AU'):'',
+        verdict,reason
+      ];
+    });
+
+    const csv=[headers,...rows].map(r=>r.map(v=>`"${String(v||'').replace(/"/g,'""')}"`).join(',')).join('
+');
+    const blob=new Blob([csv],{type:'text/csv;charset=utf-8;'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;a.download=`leads_audit_${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();URL.revokeObjectURL(url);
+
+    const verified=rows.filter(r=>r[13]==='VERIFIED').length;
+    const suspect=rows.filter(r=>r[13]==='SUSPECT').length;
+    const likelyReal=rows.filter(r=>r[13]==='LIKELY REAL').length;
+
+    document.getElementById('covDot').className='dot done';
+    document.getElementById('covStatus').textContent=`Exported ${allLeads.length} leads — ${verified} VERIFIED · ${likelyReal} LIKELY REAL · ${suspect} SUSPECT (check these)`;
+  }catch(e){
+    document.getElementById('covDot').className='dot error';
+    document.getElementById('covStatus').textContent='Export failed: '+e.message;
+  }
+}
 
 // Update DB count when industry changes
 document.addEventListener('DOMContentLoaded',()=>{
