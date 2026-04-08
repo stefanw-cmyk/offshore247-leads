@@ -184,6 +184,9 @@
         <option value="it company">IT Company</option>
         <option value="marketing agency">Marketing Agency</option>
         <option value="construction company">Construction Company</option>
+        <option value="air conditioning company">Air Conditioning / HVAC</option>
+        <option value="electrical contractor">Electrical Contractor</option>
+        <option value="plumbing company">Plumbing Company</option>
         <option value="medical practice">Medical Practice</option>
         <option value="dental practice">Dental Practice</option>
         <option value="recruitment agency">Recruitment Agency</option>
@@ -633,6 +636,9 @@ const INDUSTRY_ALIASES={
   'recruitment agency':['recruitment agency','staffing agency','labour hire','employment agency'],
   'insurance broker':['insurance broker','insurance agent','insurance adviser'],
   'engineering firm':['engineering firm','engineering company','structural engineer','civil engineer'],
+  'air conditioning company':['air conditioning company','HVAC company','air con installer','refrigeration company','climate control company','aircon service','cooling heating company','air conditioning contractor'],
+  'electrical contractor':['electrical contractor','electrician','electrical company','licensed electrician','electrical services','electrical business','commercial electrician','residential electrician'],
+  'plumbing company':['plumber','plumbing company','plumbing contractor','plumbing services','licensed plumber'],
 };
 
 function getSearchQueries(industry){
@@ -686,11 +692,62 @@ function cleanContactName(raw){
   name=name.replace(/\b(Founder|Director|Principal|CEO|MD|Owner|Manager|LIC|Partner|Co-Director|Managing)\b.*$/i,'').trim();
   // Remove trailing punctuation
   name=name.replace(/[,\-:]+$/,'').trim();
-  // Must be 2-50 chars and contain a space (first + last name)
+  // Must be 2-50 chars
   if(name.length<2||name.length>50)return null;
-  // Reject if it looks like a company name (all caps words, Pty, Ltd etc)
-  if(/\b(Pty|Ltd|Pty Ltd|Group|Agency|Real Estate|Property|Realty)\b/i.test(name))return null;
+  // Must contain at least one space (first + last name) — reject single names like "Bernadette"
+  if(!name.includes(' '))return null;
+  // Reject if it looks like a company name
+  if(/\b(Pty|Ltd|Pty Ltd|Group|Agency|Real Estate|Property|Realty|Management|Services|Investments|Solutions|Holdings)\b/i.test(name))return null;
+  // Reject if name matches the company name exactly
   return name||null;
+}
+
+// ─── State validation ──────────────────────────────────────────────────────────
+function isWrongStatePhone(phone){
+  if(!phone)return false;
+  const p=phone.replace(/[()\s-]/g,'');
+  return p.startsWith('02')||p.startsWith('03')||p.startsWith('08');
+}
+
+// ─── Shared export cleaning — used by all three export functions ───────────────
+function cleanRowsForExport(rows,industryFallback){
+  const seenMobiles=new Set();
+  const seenCompanies=new Set();
+  let blocked=0;
+  const clean=[];
+
+  for(const l of rows){
+    // Block wrong state (maps phone starts with 02/03/08)
+    if(isWrongStatePhone(l.maps_phone||l.Phone||'')){blocked++;continue;}
+    // Block no name or uncleanable name
+    const cleanedName=cleanContactName(l.contact||l['First Name']||'');
+    if(!cleanedName){blocked++;continue;}
+    // Block no mobile
+    const mobile=validateMobile(l.mobile||l.Mobile||'');
+    if(!mobile){blocked++;continue;}
+    // Deduplicate
+    const m=mobile.replace(/\s/g,'');
+    const c=(l.company||l.Company||'').toLowerCase().trim();
+    if(m&&seenMobiles.has(m)){blocked++;continue;}
+    if(c&&seenCompanies.has(c)){blocked++;continue;}
+    if(m)seenMobiles.add(m);
+    if(c)seenCompanies.add(c);
+
+    const parts=cleanedName.trim().split(/\s+/);
+    const firstName=parts.length>1?parts.slice(0,-1).join(' '):(parts[0]||'');
+    const lastName=parts.length>1?parts[parts.length-1]:'';
+    const cleanCompany=(l.company||l.Company||'').split('|')[0].trim();
+    const phone=l.maps_phone||l.Phone||'';
+    const industry=l.industry||l.Industry||industryFallback||'';
+
+    clean.push([
+      lastName,firstName,l.title||l.Title||'',cleanCompany,
+      phone,mobile,l.email||l.Email||'',l.website||l.Website||'',
+      l.city||l.City||'',l.state||l.State||'','Australia',
+      mapIndustry(industry),'Lead Prospector — Offshore 24/7','New','','','',''
+    ]);
+  }
+  return{clean,blocked};
 }
 
 // ─── Multi-source enrichment pipeline ────────────────────────────────────────
@@ -1299,74 +1356,28 @@ function updateSelectedExportBtn(){
 async function exportSelectedRuns(){
   const checked=[...document.querySelectorAll('.cov-run-check:checked')];
   if(checked.length===0)return;
-
   document.getElementById('covStatus').textContent=`Fetching leads from ${checked.length} selected runs...`;
   document.getElementById('covDot').className='dot active';
-
   try{
     const runIds=checked.map(cb=>cb.dataset.runid);
     const industry=checked[0].dataset.industry;
-
-    // Fetch all leads for selected runs
     let allRows=[];
     for(const runId of runIds){
       const rows=await sbFetch(`leads?run_id=eq.${runId}&order=created_at.asc&limit=500`);
       if(rows&&rows.length>0)allRows.push(...rows);
     }
-
-    if(allRows.length===0){
-      document.getElementById('covStatus').textContent='No leads found for selected runs.';
-      document.getElementById('covDot').className='dot error';
-      return;
-    }
-
+    if(allRows.length===0){document.getElementById('covStatus').textContent='No leads found for selected runs.';document.getElementById('covDot').className='dot error';return;}
+    const {clean,blocked}=cleanRowsForExport(allRows,industry);
+    if(clean.length===0){document.getElementById('covStatus').textContent=`Nothing exportable — ${blocked} blocked.`;document.getElementById('covDot').className='dot error';return;}
     const headers=['Last Name','First Name','Title','Company','Phone','Mobile','Email','Website','City','Province (State)','Country','Industry','Lead Source','Lead Status','Campaign Name','Service Interest','Estimated Headcount Needed','Description'];
-    const seenMobiles=new Set();
-    const seenCompanies=new Set();
-    let blocked=0;
-
-    const csvRows=allRows.filter(l=>{
-      const name=cleanContactName(l.contact||'');
-      if(!name){blocked++;return false;}
-      const mobile=validateMobile(l.mobile||'');
-      if(!mobile){blocked++;return false;}
-      const m=mobile.replace(/\s/g,'');
-      const c=(l.company||'').toLowerCase().trim();
-      if(m&&seenMobiles.has(m)){blocked++;return false;}
-      if(c&&seenCompanies.has(c)){blocked++;return false;}
-      if(m)seenMobiles.add(m);
-      if(c)seenCompanies.add(c);
-      return true;
-    }).map(l=>{
-      const cleanedName=cleanContactName(l.contact||'')||'';
-      const parts=cleanedName.trim().split(/\s+/);
-      const firstName=parts.length>1?parts.slice(0,-1).join(' '):(parts[0]||'');
-      const lastName=parts.length>1?parts[parts.length-1]:'';
-      const mobile=validateMobile(l.mobile||'')||'';
-      const cleanCompany=(l.company||'').split('|')[0].trim();
-      return[lastName,firstName,l.title||'',cleanCompany,l.maps_phone||'',mobile,l.email||'',l.website||'',l.city||'',l.state||'','Australia',mapIndustry(l.industry||industry),'Lead Prospector — Offshore 24/7','New','','','',''];
-    });
-
-    if(csvRows.length===0){
-      document.getElementById('covStatus').textContent=`Nothing exportable — ${blocked} leads blocked (no name or no mobile).`;
-      document.getElementById('covDot').className='dot error';
-      return;
-    }
-
     const date=new Date().toISOString().slice(0,10);
-    downloadCSV([headers,...csvRows],`zoho_selected_${checked.length}runs_${date}.csv`);
+    downloadCSV([headers,...clean],`zoho_selected_${checked.length}runs_${date}.csv`);
     document.getElementById('covDot').className='dot done';
-    document.getElementById('covStatus').textContent=`Exported ${csvRows.length} clean leads from ${checked.length} runs. ${blocked} blocked.`;
-
-    // Uncheck all after export
+    document.getElementById('covStatus').textContent=`Exported ${clean.length} clean leads from ${checked.length} runs. ${blocked} blocked.`;
     document.querySelectorAll('.cov-run-check').forEach(cb=>cb.checked=false);
     document.getElementById('covSelectAll').checked=false;
     updateSelectedExportBtn();
-
-  }catch(e){
-    document.getElementById('covDot').className='dot error';
-    document.getElementById('covStatus').textContent='Export failed: '+e.message;
-  }
+  }catch(e){document.getElementById('covDot').className='dot error';document.getElementById('covStatus').textContent='Export failed: '+e.message;}
 }
 
 async function exportRunFromDB(runId,postcode,suburb,state,industry){
@@ -1375,50 +1386,12 @@ async function exportRunFromDB(runId,postcode,suburb,state,industry){
   try{
     const rows=await sbFetch(`leads?run_id=eq.${runId}&order=created_at.asc&limit=500`);
     if(!rows||rows.length===0){document.getElementById('covStatus').textContent='No leads found for this run.';document.getElementById('covDot').className='dot error';return;}
-
-    const date=new Date().toISOString().slice(0,10);
+    const {clean,blocked}=cleanRowsForExport(rows,industry);
+    if(clean.length===0){document.getElementById('covStatus').textContent=`Nothing exportable — ${blocked} blocked.`;document.getElementById('covDot').className='dot error';return;}
     const headers=['Last Name','First Name','Title','Company','Phone','Mobile','Email','Website','City','Province (State)','Country','Industry','Lead Source','Lead Status','Campaign Name','Service Interest','Estimated Headcount Needed','Description'];
-
-    // Apply same cleaning as main export
-    const seenMobiles=new Set();
-    const seenCompanies=new Set();
-    let blocked=0;
-
-    const csvRows=rows.filter(l=>{
-      // Block no name
-      const name=cleanContactName(l.contact||'');
-      if(!name){blocked++;return false;}
-      // Block no mobile
-      const mobile=validateMobile(l.mobile||'');
-      if(!mobile){blocked++;return false;}
-      // Deduplicate by mobile
-      const m=(mobile||'').replace(/\s/g,'');
-      const c=(l.company||'').toLowerCase().trim();
-      if(m&&seenMobiles.has(m)){blocked++;return false;}
-      if(c&&seenCompanies.has(c)){blocked++;return false;}
-      if(m)seenMobiles.add(m);
-      if(c)seenCompanies.add(c);
-      return true;
-    }).map(l=>{
-      const cleanedName=cleanContactName(l.contact||'')||'';
-      const parts=cleanedName.trim().split(/\s+/);
-      const firstName=parts.length>1?parts.slice(0,-1).join(' '):(parts[0]||'');
-      const lastName=parts.length>1?parts[parts.length-1]:'';
-      const mobile=validateMobile(l.mobile||'')||'';
-      const cleanCompany=(l.company||'').split('|')[0].trim();
-      // Detect wrong state from maps phone
-      const phone=l.maps_phone||'';
-      return[lastName,firstName,l.title||'',cleanCompany,phone,mobile,l.email||'',l.website||'',l.city||suburb,l.state||state,'Australia',mapIndustry(l.industry||industry),'Lead Prospector — Offshore 24/7','New','','','',''];
-    });
-
-    if(csvRows.length===0){
-      document.getElementById('covStatus').textContent=`No clean leads to export (${blocked} blocked — no name or no mobile).`;
-      document.getElementById('covDot').className='dot error';
-      return;
-    }
-
-    downloadCSV([headers,...csvRows],`zoho_${postcode}_${industry.replace(/\s/g,'_')}_${date}.csv`);
-    document.getElementById('covStatus').textContent=`Exported ${csvRows.length} clean leads from ${suburb}. ${blocked>0?blocked+' blocked (no name/mobile).':''}`;
+    const date=new Date().toISOString().slice(0,10);
+    downloadCSV([headers,...clean],`zoho_${postcode}_${industry.replace(/\s/g,'_')}_${date}.csv`);
+    document.getElementById('covStatus').textContent=`Exported ${clean.length} clean leads from ${suburb}. ${blocked} blocked.`;
     document.getElementById('covDot').className='dot done';
   }catch(e){document.getElementById('covStatus').textContent='Export failed: '+e.message;document.getElementById('covDot').className='dot error';}
 }
@@ -1437,64 +1410,25 @@ function downloadCSV(rows,filename){
 function exportCSV(){
   const filter=document.querySelector('input[name="cf"]:checked').value;
   let toExport=leads.filter(l=>l.selected&&!l.excluded);
-
-  // HARD BLOCKS
-  const noName=toExport.filter(l=>!l.contact||l.contact==='—').length;
-  const noMobile=toExport.filter(l=>!l.mobile||l.mobile==='—').length;
-  toExport=toExport.filter(l=>{
-    if(!l.contact||l.contact==='—')return false;
-    if(!l.mobile||l.mobile==='—')return false;
-    return true;
-  });
-
-  // Apply filter
   if(filter==='named_mobile')toExport=toExport.filter(l=>l.mobile!=='—'&&l.contact!=='—');
   else if(filter==='email')toExport=toExport.filter(l=>l.email!=='—');
 
-  // Deduplicate by mobile within this export
-  const seenMobiles=new Set();
-  const seenCompanies=new Set();
-  toExport=toExport.filter(l=>{
-    const m=(l.mobile||'').replace(/\s/g,'');
-    const c=(l.company||'').toLowerCase().trim();
-    if(m&&seenMobiles.has(m))return false;
-    if(c&&seenCompanies.has(c))return false;
-    if(m)seenMobiles.add(m);
-    if(c)seenCompanies.add(c);
-    return true;
-  });
+  // Convert to DB-style objects for shared cleaner
+  const asDbRows=toExport.map(l=>({
+    contact:l.contact,company:l.company,title:l.title,mobile:l.mobile,
+    email:l.email,website:l.website,maps_phone:l.maps_phone,
+    city:l.cleanSuburb||l.suburb,state:l.state,industry:l.industry
+  }));
 
-  // Flag wrong state (don't block — user may want them — but warn)
-  const wrongStateCount=toExport.filter(l=>l.wrong_state).length;
-
-  if(toExport.length===0){
-    setStatus(`Nothing to export. ${noName} blocked (no name), ${noMobile} blocked (no mobile).`,'error');
+  const {clean,blocked}=cleanRowsForExport(asDbRows,getIndustry());
+  if(clean.length===0){
+    setStatus(`Nothing to export. ${blocked} leads blocked (no name, no mobile, wrong state, or duplicate).`,'error');
     return;
   }
-
   const industry=getIndustry(),pc=document.getElementById('postcode').value.trim(),date=new Date().toISOString().slice(0,10);
   const headers=['Last Name','First Name','Title','Company','Phone','Mobile','Email','Website','City','Province (State)','Country','Industry','Lead Source','Lead Status','Campaign Name','Service Interest','Estimated Headcount Needed','Description'];
-  const rows=toExport.map(l=>{
-    // Clean mobile on export
-    const mobile=validateMobile(l.mobile)||l.mobile||'';
-    // Clean contact name
-    const cleanedContact=cleanContactName(l.contact)||l.contact||'';
-    const parts=cleanedContact.trim().split(/\s+/);
-    const firstName=parts.length>1?parts.slice(0,-1).join(' '):(parts[0]||'');
-    const lastName=parts.length>1?parts[parts.length-1]:'';
-    // Clean company name — strip pipe characters and trailing descriptors
-    const cleanCompany=(l.company||'').split('|')[0].trim();
-    const phone=l.maps_phone&&l.maps_phone!=='—'?l.maps_phone:'';
-    return[lastName,firstName,l.title!=='—'?l.title:'',cleanCompany,phone,mobile,l.email!=='—'?l.email:'',l.website||'',l.cleanSuburb||l.suburb,l.state||extractState(l.suburb),'Australia',mapIndustry(l.industry||industry),'Lead Prospector — Offshore 24/7','New','','','',''];
-  });
-
-  downloadCSV([headers,...rows],`zoho_leads_${pc}_${industry.replace(/\s/g,'_')}_${date}.csv`);
-
-  let msg=`Exported ${toExport.length} leads → Zoho ready.`;
-  if(noName>0)msg+=` ${noName} blocked (no name).`;
-  if(noMobile>0)msg+=` ${noMobile} blocked (no mobile).`;
-  if(wrongStateCount>0)msg+=` ⚠ ${wrongStateCount} wrong-state included.`;
-  setStatus(msg,'done');
+  downloadCSV([headers,...clean],`zoho_leads_${pc}_${industry.replace(/\s/g,'_')}_${date}.csv`);
+  setStatus(`Exported ${clean.length} leads → Zoho ready. ${blocked} blocked.`,'done');
 }
 
 function exportManualCSV(){
@@ -1734,52 +1668,14 @@ async function exportAllToday(){
   try{
     const today=new Date().toISOString().slice(0,10);
     const rows=await sbFetch(`leads?created_at=gte.${today}T00:00:00&order=created_at.asc&limit=2000`);
-    if(!rows||rows.length===0){
-      document.getElementById('covStatus').textContent='No leads found from today.';
-      document.getElementById('covDot').className='dot error';
-      return;
-    }
-
+    if(!rows||rows.length===0){document.getElementById('covStatus').textContent='No leads found from today.';document.getElementById('covDot').className='dot error';return;}
+    const {clean,blocked}=cleanRowsForExport(rows,'');
+    if(clean.length===0){document.getElementById('covStatus').textContent=`Nothing exportable today — ${blocked} blocked.`;document.getElementById('covDot').className='dot error';return;}
     const headers=['Last Name','First Name','Title','Company','Phone','Mobile','Email','Website','City','Province (State)','Country','Industry','Lead Source','Lead Status','Campaign Name','Service Interest','Estimated Headcount Needed','Description'];
-    const seenMobiles=new Set();
-    const seenCompanies=new Set();
-    let blocked=0;
-
-    const csvRows=rows.filter(l=>{
-      const name=cleanContactName(l.contact||'');
-      if(!name){blocked++;return false;}
-      const mobile=validateMobile(l.mobile||'');
-      if(!mobile){blocked++;return false;}
-      const m=mobile.replace(/\s/g,'');
-      const c=(l.company||'').toLowerCase().trim();
-      if(m&&seenMobiles.has(m)){blocked++;return false;}
-      if(c&&seenCompanies.has(c)){blocked++;return false;}
-      if(m)seenMobiles.add(m);
-      if(c)seenCompanies.add(c);
-      return true;
-    }).map(l=>{
-      const cleanedName=cleanContactName(l.contact||'')||'';
-      const parts=cleanedName.trim().split(/\s+/);
-      const firstName=parts.length>1?parts.slice(0,-1).join(' '):(parts[0]||'');
-      const lastName=parts.length>1?parts[parts.length-1]:'';
-      const mobile=validateMobile(l.mobile||'')||'';
-      const cleanCompany=(l.company||'').split('|')[0].trim();
-      return[lastName,firstName,l.title||'',cleanCompany,l.maps_phone||'',mobile,l.email||'',l.website||'',l.city||'',l.state||'','Australia',mapIndustry(l.industry||''),'Lead Prospector — Offshore 24/7','New','','','',''];
-    });
-
-    if(csvRows.length===0){
-      document.getElementById('covStatus').textContent=`Nothing exportable today — ${blocked} leads blocked (no name or no mobile).`;
-      document.getElementById('covDot').className='dot error';
-      return;
-    }
-
-    downloadCSV([headers,...csvRows],`zoho_all_today_${today}.csv`);
+    downloadCSV([headers,...clean],`zoho_all_today_${today}.csv`);
     document.getElementById('covDot').className='dot done';
-    document.getElementById('covStatus').textContent=`Exported ${csvRows.length} clean leads from today. ${blocked} blocked (no name/mobile/duplicate).`;
-  }catch(e){
-    document.getElementById('covDot').className='dot error';
-    document.getElementById('covStatus').textContent='Export failed: '+e.message;
-  }
+    document.getElementById('covStatus').textContent=`Exported ${clean.length} clean leads from today. ${blocked} blocked.`;
+  }catch(e){document.getElementById('covDot').className='dot error';document.getElementById('covStatus').textContent='Export failed: '+e.message;}
 }
 
 // ─── Export ALL leads from DB (audit) ─────────────────────────────────────────
