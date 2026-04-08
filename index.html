@@ -225,7 +225,7 @@
         <option value="60">60s — max</option>
       </select>
     </div>
-    <span style="font-size:11px;color:var(--muted);margin-left:auto">Queue stops when target hit &nbsp;·&nbsp; <span id="dbMobileCount" style="color:var(--accent)">—</span> mobiles in DB</span>
+    <span style="font-size:11px;color:var(--muted);margin-left:auto">Queue stops when target hit</span>
   </div>
 
   <!-- Export filter -->
@@ -675,110 +675,151 @@ async function fetchPlaces(mapsKey,industry,suburb,maxResults){
   return all;
 }
 
-// ─── Multi-source enrichment pipeline ────────────────────────────────────────
-// Stage 1: Claude searches ALL free directories in one call (YP, TrueLocal, WhitePages, ABN)
-// Stage 2: If no mobile found, Claude visits website
-// This is cheaper than separate fetches (CORS blocked anyway) and faster than two Claude calls
+// ─── Name cleaning ─────────────────────────────────────────────────────────────
+function cleanContactName(raw){
+  if(!raw||raw==='—'||raw==='null')return null;
+  // Strip everything after & or ( or | or + or /
+  let name=raw.split(/[&(|+\/]/)[0].trim();
+  // Remove common title suffixes that sneak in
+  name=name.replace(/\b(Founder|Director|Principal|CEO|MD|Owner|Manager|LIC|Partner|Co-Director|Managing)\b.*$/i,'').trim();
+  // Remove trailing punctuation
+  name=name.replace(/[,\-:]+$/,'').trim();
+  // Must be 2-50 chars and contain a space (first + last name)
+  if(name.length<2||name.length>50)return null;
+  // Reject if it looks like a company name (all caps words, Pty, Ltd etc)
+  if(/\b(Pty|Ltd|Pty Ltd|Group|Agency|Real Estate|Property|Realty)\b/i.test(name))return null;
+  return name||null;
+}
 
+// ─── Multi-source enrichment pipeline ────────────────────────────────────────
 async function enrichLead(apiKey,lead,industry,suburb,state){
   if(!apiKey)return{mobile:null,contact:null,title:null,email:null,source:null,free:false};
   const company=lead.company;
   const sub=lead.cleanSuburb||suburb||'';
   const st=lead.state||state||'';
+  const landline=lead.maps_phone&&lead.maps_phone!=='—'?lead.maps_phone:'';
 
-  // Stage 1: Search free directories first — one Claude call, no website visit
-  const dirPrompt=`Search these free Australian directories for the owner/principal/director of this ${industry} business and their mobile number:
+  // Stage 1: Google search — surfaces Google Business Profile, directories, REIWA etc instantly
+  const googlePrompt=`Search Google for the owner or principal of this Australian ${industry} and their direct mobile number.
+
+Search: "${company}" ${sub} owner mobile contact
+
+Also check:
 - yellowpages.com.au
-- truelocal.com.au  
+- reiwa.com.au (if real estate)
+- truelocal.com.au
 - whitepages.com.au
-- abr.business.gov.au (for registered owner name)
+${landline?`Their office landline is ${landline} — use this to find the right business listing.`:''}
 
-Business: ${company}
-Location: ${sub}, ${st}
+Rules:
+- Return ONE person only — the most senior (owner, principal, director, licensee, founder)
+- Name must be FIRST NAME LAST NAME only — no titles, no brackets, no "and", no job titles in the name
+- Mobile must be 04xx format — direct mobile only, not office number
+- If mobile found in a directory listing with a URL, return that URL as source_url
+- If you cannot find a mobile with certainty, return null for mobile — do NOT guess
 
-Search each directory. Look for:
-1. The most senior person's name (owner, principal, director, licensee, founder)
-2. Their mobile number (04xx format)
-3. Their email address
-
-If you find a mobile on any of these directories, that is enough — stop and return it.
-Return ONLY raw JSON: {"contact":"Name or null","title":"Title or null","mobile":"04xx xxx xxx or null","email":"email or null","source":"yellowpages/truelocal/whitepages/abn/none"}`;
+Return ONLY raw JSON:
+{"contact":"First Last","title":"Their Title","mobile":"04xx xxx xxx or null","email":"email or null","source_url":"https://url or null","source":"yellowpages/reiwa/truelocal/whitepages/google/none"}`;
 
   try{
-    const text1=await callClaude(apiKey,dirPrompt,20000,1);
+    const text1=await callClaude(apiKey,googlePrompt,20000,1);
     const match1=text1.replace(/```json|```/g,'').trim().match(/\{[\s\S]*?\}/);
     if(match1){
       const d=JSON.parse(match1[0]);
-      if(d.mobile&&d.mobile!=='null'&&d.mobile!=='—'){
-        return{
-          contact:d.contact&&d.contact!=='null'?d.contact:null,
-          title:d.title&&d.title!=='null'?d.title:null,
-          mobile:d.mobile,email:d.email&&d.email!=='null'?d.email:null,
-          source:d.source||'directory',free:true
-        };
-      }
-      // Got a name but no mobile — use it in Stage 2
-      if(d.contact&&d.contact!=='null'&&d.contact!=='—'){
-        const partialName=d.contact;
+      const cleanedName=cleanContactName(d.contact);
+      const validMobile=d.mobile&&d.mobile!=='null'&&d.mobile!=='—'?validateMobile(d.mobile):null;
+      const sourceUrl=d.source_url&&d.source_url!=='null'&&d.source_url.length>5?d.source_url:null;
 
-        // Stage 2: Claude visits website with name hint
-        if(lead.website){
-          const webPrompt=`Find the direct mobile number for ${partialName}, who is the owner/principal/director of this Australian ${industry}.
+      if(validMobile){
+        // Directory mobile — no source URL required (it came from a known directory)
+        const isDirSource=['yellowpages','reiwa','truelocal','whitepages','google'].includes((d.source||'').toLowerCase());
+        if(isDirSource||sourceUrl){
+          return{contact:cleanedName,title:d.title&&d.title!=='null'?d.title:null,
+            mobile:validMobile,email:d.email&&d.email!=='null'?d.email:null,
+            source_url:sourceUrl,source:d.source||'directory',free:true};
+        }
+      }
+      // Got name but no mobile — use in Stage 2
+      if(cleanedName&&lead.website){
+        const webPrompt=`Find the direct mobile number for ${cleanedName}, the owner/principal of this Australian ${industry}.
+
 Business: ${company}
 Website: ${lead.website}
 Location: ${sub}, ${st}
+${landline?`Office number: ${landline}`:''}
 
-Visit the website, find the team/about/contact page.
-Look specifically for ${partialName}'s mobile (04xx format).
-Also get their email and title if shown.
-Return ONLY raw JSON: {"contact":"${partialName}","title":"Title or null","mobile":"04xx xxx xxx or null","mobile_verified":true,"email":"email or null"}`;
-          try{
-            const text2=await callClaude(apiKey,webPrompt,getTimeoutMs(),1);
-            const match2=text2.replace(/```json|```/g,'').trim().match(/\{[\s\S]*?\}/);
-            if(match2){
-              const w=JSON.parse(match2[0]);
-              return{
-                contact:w.contact||partialName,title:w.title&&w.title!=='null'?w.title:null,
-                mobile:w.mobile&&w.mobile!=='null'&&w.mobile!=='—'?w.mobile:null,
-                email:w.email&&w.email!=='null'?w.email:null,
-                source:'claude_web',free:false
-              };
-            }
-          }catch(e2){return{contact:partialName,title:null,mobile:null,email:null,source:'directory_name_only',free:true,claudeError:e2.message};}
-        }
-        return{contact:partialName,title:null,mobile:null,email:null,source:'directory_name_only',free:true};
+Visit the website team/about/contact page.
+Look specifically for ${cleanedName}'s mobile (04xx format).
+Return the exact page URL where you find the number.
+
+Rules:
+- Mobile must be 04xx format
+- Must return the source_url of the page where you found it
+- If not found, return null for mobile — do NOT guess
+
+Return ONLY raw JSON:
+{"contact":"${cleanedName}","title":"Title or null","mobile":"04xx xxx xxx or null","email":"email or null","source_url":"https://exact-page-url or null"}`;
+        try{
+          const text2=await callClaude(apiKey,webPrompt,getTimeoutMs(),1);
+          const match2=text2.replace(/```json|```/g,'').trim().match(/\{[\s\S]*?\}/);
+          if(match2){
+            const w=JSON.parse(match2[0]);
+            const wMobile=w.mobile&&w.mobile!=='null'&&w.mobile!=='—'?validateMobile(w.mobile):null;
+            const wUrl=w.source_url&&w.source_url!=='null'&&w.source_url.length>5?w.source_url:null;
+            // RULE: website Claude mobile MUST have source URL
+            return{
+              contact:cleanedName,title:w.title&&w.title!=='null'?w.title:null,
+              mobile:wMobile&&wUrl?wMobile:null,
+              email:w.email&&w.email!=='null'?w.email:null,
+              source_url:wUrl,source:'claude_web',free:false
+            };
+          }
+        }catch(e2){return{contact:cleanedName,title:null,mobile:null,email:null,source:'directory_name_only',free:true};}
+        return{contact:cleanedName,title:null,mobile:null,email:null,source:'directory_name_only',free:true};
       }
+      // Name only, no website
+      if(cleanedName)return{contact:cleanedName,title:null,mobile:null,email:null,source:'directory_name_only',free:true};
     }
-  }catch(e1){/* Stage 1 failed — fall through to Stage 2 */}
+  }catch(e1){/* Stage 1 failed — fall through */}
 
-  // Stage 2: Full Claude enrichment (website visit)
+  // Stage 2: Full website visit (no name found in Stage 1)
   if(!lead.website)return{mobile:null,contact:null,title:null,email:null,source:null,free:false};
   try{
-    const prompt=`Find the owner/principal/director/founder/CEO/MD/licensee-in-charge of this Australian ${industry} and their direct mobile number.
+    const prompt=`Find the owner/principal/director/founder of this Australian ${industry} and their direct mobile.
+
 Business: ${company}
 Website: ${lead.website}
 Location: ${sub}, ${st}
-1. Visit website, find team/about/people page
-2. Most senior person: Owner, Principal, Director, Founder, CEO, MD, LIC, Partner
-3. Get mobile (04xx xxx xxx) — must be their direct mobile not office landline
-4. Get email if shown
-Return ONLY raw JSON: {"contact":"Name","title":"Title","mobile":"04xx xxx xxx","mobile_verified":true,"email":"email@domain.com","source_url":"https://url"}
-Use "—" for missing.`;
+${landline?`Office number: ${landline} — use to confirm you have the right business`:''}
+
+Steps:
+1. Visit the website team/about/people/contact page
+2. Find the MOST SENIOR person (Owner, Principal, Director, Founder, CEO, LIC, Partner)
+3. Get their direct mobile (04xx) — NOT the office landline
+4. Return the exact URL of the page where you found the mobile
+
+Rules:
+- Return ONE person only — the most senior
+- Name = FIRST NAME LAST NAME only — no job titles, no brackets, no "and"
+- If multiple people shown, pick the owner/founder/principal
+- source_url is REQUIRED if returning a mobile — if you cannot provide it, return null for mobile
+- Do NOT guess or fabricate numbers
+
+Return ONLY raw JSON:
+{"contact":"First Last","title":"Title","mobile":"04xx xxx xxx or null","email":"email or null","source_url":"https://exact-page-url or null"}`;
+
     const text=await callClaude(apiKey,prompt,getTimeoutMs());
     const match=text.replace(/```json|```/g,'').trim().match(/\{[\s\S]*?\}/);
     if(match){
       const e=JSON.parse(match[0]);
+      const cleanedName=cleanContactName(e.contact);
       const rawMobile=e.mobile&&e.mobile!=='—'?e.mobile:null;
       const sourceUrl=e.source_url&&e.source_url!=='—'&&e.source_url.length>5?e.source_url:null;
-      // RULE: Claude mobile MUST have a source URL — no source = reject mobile
       const verifiedMobile=rawMobile&&sourceUrl?validateMobile(rawMobile):null;
-      if(rawMobile&&!sourceUrl)console.warn(`Rejected mobile ${rawMobile} for ${lead.company} — no source URL`);
-      if(rawMobile&&!verifiedMobile&&sourceUrl)console.warn(`Rejected malformed mobile ${rawMobile} for ${lead.company}`);
+      if(rawMobile&&!sourceUrl)console.warn(`Rejected mobile ${rawMobile} for ${company} — no source URL`);
       return{
-        contact:e.contact&&e.contact!=='—'?e.contact:null,
-        title:e.title&&e.title!=='—'?e.title:null,
-        mobile:verifiedMobile||null,
-        source_url:sourceUrl,
+        contact:cleanedName,title:e.title&&e.title!=='—'?e.title:null,
+        mobile:verifiedMobile||null,source_url:sourceUrl,
         email:e.email&&e.email!=='—'?e.email:null,
         source:'claude',free:false
       };
@@ -950,8 +991,13 @@ async function runSearch(forcedPc){
     document.getElementById('exportBtn').disabled=false;
     document.getElementById('selectAllBtn').disabled=false;
 
-    const needsEnrich=newLeads.filter(l=>!l.enriched&&l.website&&l.enrich_status!=='maps_mobile');
-    setStatus(`${needsEnrich.length} leads need Claude enrichment (${mapsAutoCount} already have mobile from Maps)...`,'active');
+    // Pre-enrichment gate — only enrich correct state + has website leads
+    const wrongStateLeads=newLeads.filter(l=>l.wrong_state);
+    const noWebsiteLeads=newLeads.filter(l=>!l.wrong_state&&!l.enriched&&!l.website);
+    const needsEnrich=newLeads.filter(l=>!l.enriched&&l.website&&l.enrich_status!=='maps_mobile'&&!l.wrong_state);
+    if(wrongStateLeads.length>0)addProgress(`⚠ ${wrongStateLeads.length} wrong-state — enrichment skipped`,'skip');
+    if(noWebsiteLeads.length>0)addProgress(`∅ ${noWebsiteLeads.length} no website — sent to manual`,'skip');
+    setStatus(`${needsEnrich.length} leads queued for enrichment (${wrongStateLeads.length} wrong state + ${noWebsiteLeads.length} no website skipped)...`,'active');
 
     for(let i=0;i<needsEnrich.length;i++){
       if(stopRequested||targetHit())break;
@@ -961,7 +1007,9 @@ async function runSearch(forcedPc){
 
       try{
         const result=await enrichLead(apiKey,lead,industry,suburb,state);
-        lead.contact=result.contact||'—';
+        // Clean name — strip brackets, titles, multiple people
+        const cleanedContact=result.contact?cleanContactName(result.contact):null;
+        lead.contact=cleanedContact||'—';
         lead.title=result.title||'—';
         // Validate mobile — fix leading zero, reject if malformed
         const validMobile=result.mobile?validateMobile(result.mobile):null;
@@ -1010,10 +1058,13 @@ async function runSearch(forcedPc){
 // ─── Manual queue ─────────────────────────────────────────────────────────────
 function pushToManual(lead,nameOnly=false){
   if(manualLeads.find(m=>m.id===lead.id))return;
-  // Push if no mobile, OR if has mobile but no name (nameOnly mode)
-  if(lead.mobile==='—'||nameOnly){
-    manualLeads.push({...lead,manualMobile:lead.mobile!=='—'?lead.mobile:'',manualEmail:lead.email!=='—'?lead.email:'',nameOnly});
+  // Only push to manual if genuinely no mobile
+  // If has mobile but no name — that belongs in Name Fix tab, not manual queue
+  if(lead.mobile==='—'||lead.mobile===null||lead.mobile===undefined){
+    manualLeads.push({...lead,manualMobile:'',manualEmail:lead.email!=='—'?lead.email:'',nameOnly:false});
   }
+  // nameOnly=true means has mobile, needs name — route to Name Fix NOT manual queue
+  // (Name Fix pulls from Supabase DB directly — handled separately)
 }
 
 function updateManualTabBadge(){
@@ -1265,45 +1316,64 @@ function downloadCSV(rows,filename){
 function exportCSV(){
   const filter=document.querySelector('input[name="cf"]:checked').value;
   let toExport=leads.filter(l=>l.selected&&!l.excluded);
-  
-  // HARD BLOCKS — these cannot export regardless of filter
+
+  // HARD BLOCKS
   const noName=toExport.filter(l=>!l.contact||l.contact==='—').length;
   const noMobile=toExport.filter(l=>!l.mobile||l.mobile==='—').length;
-  const wrongState=toExport.filter(l=>l.wrong_state).length;
-  
-  // Remove hard-blocked leads
   toExport=toExport.filter(l=>{
-    if(!l.contact||l.contact==='—')return false; // No name = blocked
-    if(!l.mobile||l.mobile==='—')return false;   // No mobile = blocked
+    if(!l.contact||l.contact==='—')return false;
+    if(!l.mobile||l.mobile==='—')return false;
     return true;
   });
-  
-  // Apply additional filter
+
+  // Apply filter
   if(filter==='named_mobile')toExport=toExport.filter(l=>l.mobile!=='—'&&l.contact!=='—');
   else if(filter==='email')toExport=toExport.filter(l=>l.email!=='—');
-  
-  // Warn about wrong-state leads included
-  const wrongStateIncluded=toExport.filter(l=>l.wrong_state).length;
-  
+
+  // Deduplicate by mobile within this export
+  const seenMobiles=new Set();
+  const seenCompanies=new Set();
+  toExport=toExport.filter(l=>{
+    const m=(l.mobile||'').replace(/\s/g,'');
+    const c=(l.company||'').toLowerCase().trim();
+    if(m&&seenMobiles.has(m))return false;
+    if(c&&seenCompanies.has(c))return false;
+    if(m)seenMobiles.add(m);
+    if(c)seenCompanies.add(c);
+    return true;
+  });
+
+  // Flag wrong state (don't block — user may want them — but warn)
+  const wrongStateCount=toExport.filter(l=>l.wrong_state).length;
+
   if(toExport.length===0){
-    setStatus(`Nothing to export. Blocked: ${noName} no name, ${noMobile} no mobile.`,'error');
+    setStatus(`Nothing to export. ${noName} blocked (no name), ${noMobile} blocked (no mobile).`,'error');
     return;
   }
-  
-  let warnings=[];
-  if(noName>0)warnings.push(`${noName} blocked (no name)`);
-  if(noMobile>0)warnings.push(`${noMobile} blocked (no mobile)`);
-  if(wrongStateIncluded>0)warnings.push(`⚠ ${wrongStateIncluded} wrong-state leads included`);
-  
+
   const industry=getIndustry(),pc=document.getElementById('postcode').value.trim(),date=new Date().toISOString().slice(0,10);
   const headers=['Last Name','First Name','Title','Company','Phone','Mobile','Email','Website','City','Province (State)','Country','Industry','Lead Source','Lead Status','Campaign Name','Service Interest','Estimated Headcount Needed','Description'];
   const rows=toExport.map(l=>{
-    const mobile=validateMobile(l.mobile)||l.mobile; // Re-validate on export
-    const parts=l.contact&&l.contact!=='—'?l.contact.trim().split(/\s+/):[];
-    return[parts.length>1?parts[parts.length-1]:'',parts.length>1?parts.slice(0,-1).join(' '):(parts[0]||''),l.title!=='—'?l.title:'',l.company,l.maps_phone!=='—'?l.maps_phone:'',mobile!=='—'?mobile:'',l.email!=='—'?l.email:'',l.website||'',l.cleanSuburb||l.suburb,l.state||extractState(l.suburb),'Australia',mapIndustry(l.industry||industry),'Lead Prospector — Offshore 24/7','New','','','',''];
+    // Clean mobile on export
+    const mobile=validateMobile(l.mobile)||l.mobile||'';
+    // Clean contact name
+    const cleanedContact=cleanContactName(l.contact)||l.contact||'';
+    const parts=cleanedContact.trim().split(/\s+/);
+    const firstName=parts.length>1?parts.slice(0,-1).join(' '):(parts[0]||'');
+    const lastName=parts.length>1?parts[parts.length-1]:'';
+    // Clean company name — strip pipe characters and trailing descriptors
+    const cleanCompany=(l.company||'').split('|')[0].trim();
+    const phone=l.maps_phone&&l.maps_phone!=='—'?l.maps_phone:'';
+    return[lastName,firstName,l.title!=='—'?l.title:'',cleanCompany,phone,mobile,l.email!=='—'?l.email:'',l.website||'',l.cleanSuburb||l.suburb,l.state||extractState(l.suburb),'Australia',mapIndustry(l.industry||industry),'Lead Prospector — Offshore 24/7','New','','','',''];
   });
+
   downloadCSV([headers,...rows],`zoho_leads_${pc}_${industry.replace(/\s/g,'_')}_${date}.csv`);
-  setStatus(`Exported ${toExport.length} leads → Zoho ready. ${warnings.join(' · ')}`,warnings.length?'':'done');
+
+  let msg=`Exported ${toExport.length} leads → Zoho ready.`;
+  if(noName>0)msg+=` ${noName} blocked (no name).`;
+  if(noMobile>0)msg+=` ${noMobile} blocked (no mobile).`;
+  if(wrongStateCount>0)msg+=` ⚠ ${wrongStateCount} wrong-state included.`;
+  setStatus(msg,'done');
 }
 
 function exportManualCSV(){
