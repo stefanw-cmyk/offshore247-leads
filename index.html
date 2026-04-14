@@ -492,7 +492,24 @@ function getIndustry(){
 }
 
 function handleIndustryChange(){
-  document.getElementById('customIndustryRow').style.display=document.getElementById('industrySelect').value==='custom'?'block':'none';
+  const industry=document.getElementById('industrySelect').value;
+  document.getElementById('customIndustryRow').style.display=industry==='custom'?'block':'none';
+  
+  // Source intelligence check — warn if Google Maps is wrong tool for this industry
+  const cfg=getIndustryConfig(industry);
+  const bar=document.getElementById('warnBar');
+  const msg=document.getElementById('warnMsg');
+  
+  if(cfg.source==='hipages'){
+    bar.style.display='flex';
+    bar.style.background='rgba(240,112,112,.08)';
+    bar.style.borderColor='rgba(240,112,112,.3)';
+    bar.style.color='var(--danger)';
+    msg.innerHTML=`⚠ <strong>${industry.charAt(0).toUpperCase()+industry.slice(1)}</strong> — Google Maps is the wrong source for this industry. ${cfg.note||''} Use the <strong>Job Board Scraper → Hipages</strong> tab instead for much better data at ~$0.02/lead vs ~$0.40/lead here.`;
+  } else {
+    // Clear any source warning (dupe warning handled separately)
+    if(bar.textContent.includes('wrong source'))bar.classList.remove('visible');
+  }
 }
 
 function getPcInfo(pc){return PC_CACHE[pc]||{suburb:pc,state:'',display:pc};}
@@ -620,7 +637,29 @@ function updateQueueBar(done,total,label){
   document.getElementById('queueFill').style.width=total>0?`${Math.round(done/total*100)}%`:'0%';
 }
 
-// ─── Google Maps — multi-query to maximise results per suburb ─────────────────
+// ─── Industry config — source strategy, search cap, timeout ───────────────────
+const INDUSTRY_CONFIG={
+  'real estate agency':{maxSearches:5,timeout:15,source:'google_maps'},
+  'accounting firm':{maxSearches:5,timeout:15,source:'google_maps'},
+  'law firm':{maxSearches:5,timeout:15,source:'google_maps'},
+  'mortgage broker':{maxSearches:5,timeout:15,source:'google_maps'},
+  'financial planning firm':{maxSearches:5,timeout:15,source:'google_maps'},
+  'it company':{maxSearches:5,timeout:20,source:'google_maps'},
+  'marketing agency':{maxSearches:5,timeout:15,source:'google_maps'},
+  'construction company':{maxSearches:4,timeout:20,source:'google_maps'},
+  'air conditioning company':{maxSearches:3,timeout:20,source:'hipages',note:'Use Hipages scraper — Google Maps returns auto electricians and low web presence'},
+  'electrical contractor':{maxSearches:3,timeout:20,source:'hipages',note:'Use Hipages scraper — tradies rarely publish mobile on website'},
+  'plumbing company':{maxSearches:3,timeout:20,source:'hipages',note:'Use Hipages scraper'},
+  'medical practice':{maxSearches:4,timeout:15,source:'google_maps'},
+  'dental practice':{maxSearches:4,timeout:15,source:'google_maps'},
+  'recruitment agency':{maxSearches:5,timeout:15,source:'google_maps'},
+  'insurance broker':{maxSearches:5,timeout:15,source:'google_maps'},
+  'engineering firm':{maxSearches:4,timeout:20,source:'google_maps'},
+};
+
+function getIndustryConfig(industry){
+  return INDUSTRY_CONFIG[industry.toLowerCase()]||{maxSearches:5,timeout:20,source:'google_maps'};
+}
 // Industry aliases — multiple search terms per industry to get more results
 const INDUSTRY_ALIASES={
   'real estate agency':['real estate agency','real estate agent','property management','real estate principal','real estate office'],
@@ -703,10 +742,23 @@ function cleanContactName(raw){
 }
 
 // ─── State validation ──────────────────────────────────────────────────────────
-function isWrongStatePhone(phone){
-  if(!phone)return false;
+function isWrongStatePhone(phone,state){
+  if(!phone||!state)return false;
   const p=phone.replace(/[()\s-]/g,'');
-  return p.startsWith('02')||p.startsWith('03')||p.startsWith('08');
+  // Only block if area code definitively belongs to a DIFFERENT state
+  const stateAreaCodes={
+    'QLD':['07'],'NSW':['02'],'VIC':['03'],'SA':['08'],'WA':['08'],
+    'TAS':['03'],'NT':['08'],'ACT':['02']
+  };
+  const validCodes=stateAreaCodes[state]||[];
+  if(validCodes.length===0)return false;
+  // If number starts with a landline prefix that's valid for this state, it's fine
+  for(const code of validCodes){if(p.startsWith(code))return false;}
+  // If it starts with 04 (mobile) it's fine
+  if(p.startsWith('04'))return false;
+  // If it starts with another state's area code, block it
+  const allAreaCodes=['02','03','07','08'];
+  return allAreaCodes.some(c=>p.startsWith(c)&&!validCodes.includes(c));
 }
 
 // ─── Shared export cleaning — used by all three export functions ───────────────
@@ -717,8 +769,8 @@ function cleanRowsForExport(rows,industryFallback){
   const clean=[];
 
   for(const l of rows){
-    // Block wrong state (maps phone starts with 02/03/08)
-    if(isWrongStatePhone(l.maps_phone||l.Phone||'')){blocked++;continue;}
+    // Block wrong state (maps phone area code doesn't match selected state)
+    if(isWrongStatePhone(l.maps_phone||l.Phone||'',l.state||l.State||'')){blocked++;continue;}
     // Block no name or uncleanable name
     const cleanedName=cleanContactName(l.contact||l['First Name']||'');
     if(!cleanedName){blocked++;continue;}
@@ -757,6 +809,8 @@ async function enrichLead(apiKey,lead,industry,suburb,state){
   const sub=lead.cleanSuburb||suburb||'';
   const st=lead.state||state||'';
   const landline=lead.maps_phone&&lead.maps_phone!=='—'?lead.maps_phone:'';
+  const cfg=getIndustryConfig(industry);
+  const maxS=cfg.maxSearches;
 
   // Stage 1: Google search — surfaces Google Business Profile, directories, REIWA etc instantly
   const googlePrompt=`Search Google for the owner or principal of this Australian ${industry} and their direct mobile number.
@@ -781,7 +835,7 @@ Return ONLY raw JSON:
 {"contact":"First Last","title":"Their Title","mobile":"04xx xxx xxx or null","email":"email or null","source_url":"https://url or null","source":"yellowpages/reiwa/truelocal/whitepages/google/none"}`;
 
   try{
-    const text1=await callClaude(apiKey,googlePrompt,20000,1);
+    const text1=await callClaude(apiKey,googlePrompt,20000,1,maxS);
     const match1=text1.replace(/```json|```/g,'').trim().match(/\{[\s\S]*?\}/);
     if(match1){
       const d=JSON.parse(match1[0]);
@@ -819,7 +873,7 @@ Rules:
 Return ONLY raw JSON:
 {"contact":"${cleanedName}","title":"Title or null","mobile":"04xx xxx xxx or null","email":"email or null","source_url":"https://exact-page-url or null"}`;
         try{
-          const text2=await callClaude(apiKey,webPrompt,getTimeoutMs(),1);
+          const text2=await callClaude(apiKey,webPrompt,getTimeoutMs(),1,maxS);
           const match2=text2.replace(/```json|```/g,'').trim().match(/\{[\s\S]*?\}/);
           if(match2){
             const w=JSON.parse(match2[0]);
@@ -867,7 +921,7 @@ Rules:
 Return ONLY raw JSON:
 {"contact":"First Last","title":"Title","mobile":"04xx xxx xxx or null","email":"email or null","source_url":"https://exact-page-url or null"}`;
 
-    const text=await callClaude(apiKey,prompt,getTimeoutMs());
+    const text=await callClaude(apiKey,prompt,getTimeoutMs(),1,maxS);
     const match=text.replace(/```json|```/g,'').trim().match(/\{[\s\S]*?\}/);
     if(match){
       const e=JSON.parse(match[0]);
@@ -904,7 +958,7 @@ function validateMobile(raw){
 }
 
 // ─── Claude with timeout ──────────────────────────────────────────────────────
-async function callClaude(apiKey,prompt,timeoutMs,retries=3){
+async function callClaude(apiKey,prompt,timeoutMs,retries=3,maxSearches=3){
   for(let attempt=0;attempt<retries;attempt++){
     const ctrl=new AbortController();
     const timer=setTimeout(()=>ctrl.abort(),timeoutMs);
@@ -912,7 +966,12 @@ async function callClaude(apiKey,prompt,timeoutMs,retries=3){
       const resp=await fetch('https://api.anthropic.com/v1/messages',{
         method:'POST',signal:ctrl.signal,
         headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-        body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:500,tools:[{type:'web_search_20250305',name:'web_search'}],messages:[{role:'user',content:prompt}]})
+        body:JSON.stringify({
+          model:'claude-haiku-4-5-20251001',
+          max_tokens:500,
+          tools:[{type:'web_search_20250305',name:'web_search',max_uses:maxSearches}],
+          messages:[{role:'user',content:prompt}]
+        })
       });
       clearTimeout(timer);
       const data=await resp.json();
@@ -1000,15 +1059,29 @@ async function runSearch(forcedPc){
       const compRows=await sbFetch(`leads?postcode=eq.${pc}&industry=ilike.${encodeURIComponent(industry)}&select=company`);
       existingCompanies=new Set((compRows||[]).map(r=>r.company.toLowerCase().trim()));
       // Check mobiles globally across ALL runs to prevent cross-postcode duplicates
-      const mobileRows=await sbFetch(`leads?mobile=not.is.null&select=mobile&limit=5000`);
+      const mobileRows=await sbFetch(`leads?mobile=not.is.null&select=mobile&limit=10000`);
       existingMobiles=new Set((mobileRows||[]).map(r=>(r.mobile||'').replace(/\s/g,'')));
     }catch{}
+    // CRITICAL: Also add mobiles found THIS run so we never enrich the same company twice in one session
+    for(const l of leads){
+      if(l.mobile&&l.mobile!=='—')existingMobiles.add(l.mobile.replace(/\s/g,''));
+      if(l.company)existingCompanies.add(l.company.toLowerCase().trim());
+    }
+
+    // Exclusion keywords — filter out false positives before enrichment
+    const EXCLUDE_KEYWORDS={
+      'air conditioning company':['auto electrical','automotive','car air','vehicle air','mechanic','smash repair','panel beat','tyre','exhaust','muffler','radiator'],
+      'electrical contractor':['auto electrical','automotive electrical','car electrical','vehicle electrical'],
+    };
+    const excludeList=EXCLUDE_KEYWORDS[industry.toLowerCase()]||[];
 
     let skipped=0;
     const newLeads=places.filter(p=>{
       const name=(p.displayName?.text||'').toLowerCase().trim();
       const phone=p.nationalPhoneNumber||'';
       const mobile=isMobileNumber(phone)?validateMobile(phone):null;
+      // Skip if matches exclusion keywords for this industry
+      if(excludeList.some(kw=>name.includes(kw))){skipped++;return false;}
       // Skip if company already in DB for this postcode
       if(existingCompanies.has(name)){skipped++;return false;}
       // Skip if mobile already exists anywhere in DB
@@ -1060,7 +1133,15 @@ async function runSearch(forcedPc){
 
     for(let i=0;i<needsEnrich.length;i++){
       if(stopRequested||targetHit())break;
+      // Skip enrichment if company mobile already found this run
       const lead=needsEnrich[i];
+      const compKey=lead.company.toLowerCase().trim();
+      if(existingCompanies.has(compKey)){
+        addProgress(`⚡ ${lead.company} — already found this run, skipping`,'skip');
+        lead.enrich_status='skipped_dup';lead.enriched=true;
+        pushToManual(lead);continue;
+      }
+      existingCompanies.add(compKey);
       lead.enriching=true;lead.enrich_status='enriching';renderTable();
       const prog=addProgress(`[${i+1}/${needsEnrich.length}] ${lead.company}`,'active');
 
@@ -1074,6 +1155,8 @@ async function runSearch(forcedPc){
         const validMobile=result.mobile?validateMobile(result.mobile):null;
         lead.mobile=validMobile||'—';
         lead.mobile_verified=!!validMobile&&result.source!=='claude';
+        // Add to in-run dedup sets immediately so next postcode skips this company/mobile
+        if(validMobile)existingMobiles.add(validMobile.replace(/\s/g,''));
         lead.source_url=result.source_url||'—';
         lead.email=result.email||'—';
         lead.enrich_source=result.source||'none';
