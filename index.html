@@ -271,6 +271,7 @@
     <div class="toolbar-actions">
       <button class="btn-ghost" id="selectAllBtn" onclick="selectAll()" disabled>Select all</button>
       <button class="btn-ghost" id="exportBtn" onclick="exportCSV()" disabled>Export CSV → Zoho</button>
+      <button class="btn-ghost" onclick="exportFromDBModal()" style="border-color:var(--warning);color:var(--warning)">⬇ Export from DB</button>
     </div>
   </div>
 
@@ -762,39 +763,44 @@ function isWrongStatePhone(phone,state){
 }
 
 // ─── Shared export cleaning — used by all three export functions ───────────────
-function cleanRowsForExport(rows,industryFallback){
+function cleanRowsForExport(rows,industryFallback,filter){
   const seenMobiles=new Set();
   const seenCompanies=new Set();
   let blocked=0;
   const clean=[];
+  const f=filter||'named_mobile';// default keeps existing behaviour
 
   for(const l of rows){
-    // Block wrong state (maps phone area code doesn't match selected state)
+    // Always block wrong state
     if(isWrongStatePhone(l.maps_phone||l.Phone||'',l.state||l.State||'')){blocked++;continue;}
-    // Block no name or uncleanable name
     const cleanedName=cleanContactName(l.contact||l['First Name']||'');
-    if(!cleanedName){blocked++;continue;}
-    // Block no mobile
     const mobile=validateMobile(l.mobile||l.Mobile||'');
-    if(!mobile){blocked++;continue;}
-    // Deduplicate
-    const m=mobile.replace(/\s/g,'');
+    const hasEmail=(l.email||l.Email||'')&&(l.email||l.Email||'')!=='—';
+    const hasPhone=(l.maps_phone||l.Phone||'')&&(l.maps_phone||l.Phone||'')!=='—';
+    // Apply selected filter
+    if(f==='named_mobile'&&(!cleanedName||!mobile)){blocked++;continue;}
+    if(f==='mobile'&&!mobile){blocked++;continue;}
+    if(f==='email'&&!hasEmail){blocked++;continue;}
+    if(f==='any_phone'&&!mobile&&!hasPhone){blocked++;continue;}
+    // f==='none' — allow everything through
+    // Deduplicate by mobile and company
+    const m=mobile?mobile.replace(/\s/g,''):'';
     const c=(l.company||l.Company||'').toLowerCase().trim();
     if(m&&seenMobiles.has(m)){blocked++;continue;}
     if(c&&seenCompanies.has(c)){blocked++;continue;}
     if(m)seenMobiles.add(m);
     if(c)seenCompanies.add(c);
 
-    const parts=cleanedName.trim().split(/\s+/);
-    const firstName=parts.length>1?parts.slice(0,-1).join(' '):(parts[0]||'');
-    const lastName=parts.length>1?parts[parts.length-1]:'';
+    const nameParts=(cleanedName||l.company||'').trim().split(/\s+/);
+    const firstName=nameParts.length>1?nameParts.slice(0,-1).join(' '):(nameParts[0]||'');
+    const lastName=nameParts.length>1?nameParts[nameParts.length-1]:'';
     const cleanCompany=(l.company||l.Company||'').split('|')[0].trim();
     const phone=l.maps_phone||l.Phone||'';
     const industry=l.industry||l.Industry||industryFallback||'';
 
     clean.push([
       lastName,firstName,l.title||l.Title||'',cleanCompany,
-      phone,mobile,l.email||l.Email||'',l.website||l.Website||'',
+      phone,mobile||'',l.email||l.Email||'',l.website||l.Website||'',
       l.city||l.City||'',l.state||l.State||'','Australia',
       mapIndustry(industry),'Lead Prospector — Offshore 24/7','New','','','',''
     ]);
@@ -1503,7 +1509,7 @@ function exportCSV(){
     city:l.cleanSuburb||l.suburb,state:l.state,industry:l.industry
   }));
 
-  const {clean,blocked}=cleanRowsForExport(asDbRows,getIndustry());
+  const {clean,blocked}=cleanRowsForExport(asDbRows,getIndustry(),filter);
   if(clean.length===0){
     setStatus(`Nothing to export. ${blocked} leads blocked (no name, no mobile, wrong state, or duplicate).`,'error');
     return;
@@ -1851,6 +1857,30 @@ document.addEventListener('DOMContentLoaded',()=>{
   updateDbMobileCount();
 });
 
+
+// ─── Export from DB modal ─────────────────────────────────────────────────────
+async function exportFromDBModal(){
+  const state=prompt('State to export (e.g. QLD, VIC, NSW, SA, WA — leave blank for all):','');
+  const industry=prompt('Industry to export (e.g. real estate agency, air conditioning company — leave blank for all):','');
+  const filter=document.querySelector('input[name="cf"]:checked').value;
+  
+  setStatus('Fetching leads from database...','active');
+  try{
+    let url='leads?order=created_at.desc&limit=10000';
+    if(state&&state.trim())url+=`&state=ilike.${encodeURIComponent(state.trim())}`;
+    if(industry&&industry.trim())url+=`&industry=ilike.${encodeURIComponent('%'+industry.trim()+'%')}`;
+    const rows=await sbFetch(url);
+    if(!rows||rows.length===0){setStatus('No leads found in database for those filters.','error');return;}
+    const {clean,blocked}=cleanRowsForExport(rows,industry||'',filter);
+    if(clean.length===0){setStatus(`Nothing exportable — ${blocked} blocked by filter.`,'error');return;}
+    const headers=['Last Name','First Name','Title','Company','Phone','Mobile','Email','Website','City','Province (State)','Country','Industry','Lead Source','Lead Status','Campaign Name','Service Interest','Estimated Headcount Needed','Description'];
+    const date=new Date().toISOString().slice(0,10);
+    const statePart=state?state.trim():'all';
+    const indPart=industry?industry.trim().replace(/\s/g,'_'):'all';
+    downloadCSV([headers,...clean],`zoho_db_${statePart}_${indPart}_${date}.csv`);
+    setStatus(`Exported ${clean.length} leads from DB (${blocked} blocked by filter).`,'done');
+  }catch(e){setStatus('DB export failed: '+e.message,'error');}
+}
 </script>
 </body>
 </html>
