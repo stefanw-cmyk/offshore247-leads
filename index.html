@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Lead Prospector — Offshore 24/7</title>
+<title>Real Estate Prospector — Offshore 24/7</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -116,7 +116,7 @@
 
 <div class="header">
   <div style="display:flex;align-items:baseline">
-    <h1>Lead Prospector</h1>
+    <h1>Real Estate Prospector</h1>
     <span>Offshore 24/7 — BD Pipeline</span>
   </div>
   <div class="tabs">
@@ -177,21 +177,9 @@
       <label>Industry / Business Type</label>
       <select id="industrySelect" onchange="handleIndustryChange()">
         <option value="real estate agency">Real Estate Agency</option>
-        <option value="accounting firm">Accounting Firm</option>
-        <option value="law firm">Law Firm</option>
-        <option value="mortgage broker">Mortgage Broker</option>
-        <option value="financial planning firm">Financial Planning Firm</option>
-        <option value="it company">IT Company</option>
-        <option value="marketing agency">Marketing Agency</option>
-        <option value="construction company">Construction Company</option>
-        <option value="air conditioning company">Air Conditioning / HVAC</option>
-        <option value="electrical contractor">Electrical Contractor</option>
-        <option value="plumbing company">Plumbing Company</option>
-        <option value="medical practice">Medical Practice</option>
-        <option value="dental practice">Dental Practice</option>
-        <option value="recruitment agency">Recruitment Agency</option>
-        <option value="insurance broker">Insurance Broker</option>
-        <option value="engineering firm">Engineering Firm</option>
+        <option value="real estate principal">Real Estate Principal / Director</option>
+        <option value="buyers agent">Buyers Agent</option>
+        <option value="property management">Property Management Company</option>
         <option value="custom">Custom...</option>
       </select>
     </div>
@@ -802,7 +790,7 @@ function cleanRowsForExport(rows,industryFallback,filter){
       lastName,firstName,l.title||l.Title||'',cleanCompany,
       phone,mobile||'',l.email||l.Email||'',l.website||l.Website||'',
       l.city||l.City||'',l.state||l.State||'','Australia',
-      mapIndustry(industry),'Lead Prospector — Offshore 24/7','New','','','',''
+      mapIndustry(industry),'Real Estate Prospector — Offshore 24/7','New','','','',''
     ]);
   }
   return{clean,blocked};
@@ -1527,7 +1515,7 @@ function exportManualCSV(){
   const headers=['Last Name','First Name','Title','Company','Phone','Mobile','Email','Website','City','Province (State)','Country','Industry','Lead Source','Lead Status','Campaign Name','Service Interest','Estimated Headcount Needed','Description'];
   const rows=toExport.map(l=>{
     const parts=l.contact&&l.contact!=='—'?l.contact.trim().split(/\s+/):[];
-    return[parts.length>1?parts[parts.length-1]:'',parts.length>1?parts.slice(0,-1).join(' '):(parts[0]||''),l.title!=='—'?l.title:'',l.company,l.maps_phone!=='—'?l.maps_phone:'',l.manualMobile||'',l.manualEmail||'',l.website||'',l.cleanSuburb||l.suburb,l.state||extractState(l.suburb),'Australia',mapIndustry(l.industry||industry),'Lead Prospector — Offshore 24/7','New','','','',''];
+    return[parts.length>1?parts[parts.length-1]:'',parts.length>1?parts.slice(0,-1).join(' '):(parts[0]||''),l.title!=='—'?l.title:'',l.company,l.maps_phone!=='—'?l.maps_phone:'',l.manualMobile||'',l.manualEmail||'',l.website||'',l.cleanSuburb||l.suburb,l.state||extractState(l.suburb),'Australia',mapIndustry(l.industry||industry),'Real Estate Prospector — Offshore 24/7','New','','','',''];
   });
   downloadCSV([headers,...rows],`zoho_manual_${date}.csv`);
 }
@@ -1743,7 +1731,7 @@ function exportNameFixCSV(){
     const parts=l.foundName.trim().split(/\s+/);
     const firstName=parts.length>1?parts.slice(0,-1).join(' '):(parts[0]||'');
     const lastName=parts.length>1?parts[parts.length-1]:'';
-    return[lastName,firstName,l.foundTitle||'',l.company||'','',l.mobile||'','',l.website||'',l.suburb||'',l.state||'','Australia',mapIndustry(l.industry||''),'Lead Prospector — Offshore 24/7','New','','','',''];
+    return[lastName,firstName,l.foundTitle||'',l.company||'','',l.mobile||'','',l.website||'',l.suburb||'',l.state||'','Australia',mapIndustry(l.industry||''),'Real Estate Prospector — Offshore 24/7','New','','','',''];
   });
   downloadCSV([headers,...rows],`zoho_namefixed_${date}.csv`);
 }
