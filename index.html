@@ -775,8 +775,8 @@ function ypToPlace(item,state){
   return{
     displayName:{text:name},
     nationalPhoneNumber:phone,
-    shortFormattedAddress:`${suburb}, ${state}`,
-    formattedAddress:`${suburb}, ${state}`,
+    shortFormattedAddress:suburb?`${suburb}, ${state}`:state,
+    formattedAddress:suburb?`${suburb}, ${state} Australia`:state,
     websiteUri:website,
     _suburb:suburb,
     _state:state
@@ -867,7 +867,8 @@ function cleanRowsForExport(rows,industryFallback,filter){
     const firstName=cleanedName?cleanedName.trim().split(/\s+/).slice(0,-1).join(' '):'';
     const lastName=cleanedName?cleanedName.trim().split(/\s+/).slice(-1)[0]:'';
     const cleanCompany=(l.company||l.Company||'').split('|')[0].trim();
-    const phone=l.maps_phone||l.Phone||'';
+    const rawPhone=l.maps_phone||l.Phone||'';
+    const phone=rawPhone&&rawPhone!=='—'?`="${rawPhone}"`:'';
     const industry=l.industry||l.Industry||industryFallback||'';
     // Format mobile as text to prevent Excel dropping leading zero
     const mobileFormatted=mobile?`="${mobile}"`:'';
