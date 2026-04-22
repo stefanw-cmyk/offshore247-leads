@@ -512,8 +512,8 @@ function getTarget(){
 function targetHit(){
   const{type,count}=getTarget();
   if(type==='none'||count<=0)return false;
-  if(type==='total')return leads.length>=count;
-  if(type==='mobile')return leads.filter(l=>l.mobile!=='—').length>=count;
+  if(type==='total')return leads.filter(l=>!l.wrong_state).length>=count;
+  if(type==='mobile')return leads.filter(l=>l.mobile!=='—'&&!l.wrong_state).length>=count;
   return false;
 }
 
@@ -645,6 +645,13 @@ const INDUSTRY_CONFIG={
   'insurance broker':{maxSearches:5,timeout:15,source:'google_maps'},
   'engineering firm':{maxSearches:4,timeout:20,source:'google_maps'},
 };
+
+// Big firm blocklist — skip national/global firms not relevant for offshore staffing
+const BIG_FIRM_NAMES=['kpmg','deloitte','pwc','pricewaterhousecoopers','ernst & young',' ey ','grant thornton','bdo ','rsm ','pitcher partners','colliers','cbre','jll','jones lang','savills','knight frank','cushman','ray white corporate','lj hooker corporate','century 21 corporate','harcourts corporate','barry plant corporate','raine & horne corporate','mcgrath corporate','place corporate','coronis corporate','first national corporate'];
+function isBigFirm(name){
+  const n=(name||'').toLowerCase();
+  return BIG_FIRM_NAMES.some(b=>n.includes(b));
+}
 
 function getIndustryConfig(industry){
   return INDUSTRY_CONFIG[industry.toLowerCase()]||{maxSearches:5,timeout:20,source:'google_maps'};
@@ -1083,9 +1090,15 @@ async function runSearch(forcedPc){
       const name=(p.displayName?.text||'').toLowerCase().trim();
       const phone=p.nationalPhoneNumber||'';
       const mobile=isMobileNumber(phone)?validateMobile(phone):null;
+      const rawAddr=(p.shortFormattedAddress||p.formattedAddress||'');
+      const addrState=extractState(rawAddr)||'';
+      // Skip big firms immediately
+      if(isBigFirm(p.displayName?.text||'')){skipped++;return false;}
+      // Skip if wrong state — don't enrich, don't save, don't count
+      if(addrState&&state&&addrState!==state){skipped++;return false;}
       // Skip if matches exclusion keywords for this industry
       if(excludeList.some(kw=>name.includes(kw))){skipped++;return false;}
-      // Skip if company already in DB for this postcode
+      // Skip if company already in DB
       if(existingCompanies.has(name)){skipped++;return false;}
       // Skip if mobile already exists anywhere in DB
       if(mobile&&existingMobiles.has(mobile.replace(/\s/g,''))){skipped++;return false;}
@@ -1098,8 +1111,8 @@ async function runSearch(forcedPc){
       const addrPostcode=extractPostcode(rawAddress)||pc;
       const mapsIsMobile=isMobileNumber(mapsPhone);
       const validatedMapsMobile=mapsIsMobile?validateMobile(mapsPhone):null;
-      // State check: flag if company state doesn't match postcode state
-      const stateMatch=!addrState||!state||addrState===state;
+      // State always matches now — wrong state filtered above
+      const stateMatch=true;
       return{
         id:Date.now()+i,selected:true,excluded:false,
         company:p.displayName?.text||'—',website:p.websiteUri||null,
