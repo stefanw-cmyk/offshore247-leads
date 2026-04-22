@@ -117,7 +117,7 @@
 <div class="header">
   <div style="display:flex;align-items:baseline">
     <h1>Real Estate Prospector</h1>
-    <span>Offshore 24/7 — BD Pipeline</span>
+    <span>Offshore 24/7 · Yellow Pages + Claude enrichment</span>
   </div>
   <div class="tabs">
     <button class="tab active" onclick="switchTab('prospect')">Prospect</button>
@@ -132,7 +132,7 @@
 
   <div class="keys-row">
     <div class="field-wrap"><label>Anthropic API Key</label><input type="password" id="apiKey" placeholder="sk-ant-..." autocomplete="off"/></div>
-    <div class="field-wrap"><label>Google Maps API Key</label><input type="password" id="mapsKey" placeholder="AIza..." autocomplete="off"/></div>
+    <div class="field-wrap"><label>Apify Token</label><input type="password" id="apifyKey" placeholder="apify_api_..." autocomplete="off"/></div>
     <div class="field-wrap"><label>Your name (run log)</label><input type="text" id="runBy" placeholder="e.g. Stefan"/></div>
     <button class="btn-ghost" onclick="saveKeys()" style="margin-top:auto">Save</button>
   </div>
@@ -233,7 +233,7 @@
 
   <div class="stats-row" style="grid-template-columns:repeat(8,1fr)">
     <div class="stat-card"><div class="val" id="statTotal">0</div><div class="lbl">Found</div></div>
-    <div class="stat-card"><div class="val" id="statSkipped">0</div><div class="lbl">Maps→Mobile <span class="free-chip">free</span></div></div>
+    <div class="stat-card"><div class="val" id="statSkipped">0</div><div class="lbl">YP→Mobile <span class="free-chip">free</span></div></div>
     <div class="stat-card"><div class="val" id="statEnriched">0</div><div class="lbl">Claude enriched</div></div>
     <div class="stat-card"><div class="val" id="statMobile">0</div><div class="lbl">Mobiles</div></div>
     <div class="stat-card"><div class="val" id="statEmail">0</div><div class="lbl">Emails</div></div>
@@ -376,6 +376,7 @@
 </div>
 <script>
 const SB_URL='https://ojifhwprkapdqsfsufrl.supabase.co';
+const YP_ACTOR='abotapi~yellow-pages-au-scraper';
 const SB_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9qaWZod3Bya2FwZHFzZnN1ZnJsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM2OTI0MjcsImV4cCI6MjA4OTI2ODQyN30.f8UZw7qCoOFG6MosRU3FCCyihphFfGh_-HzF7B5l_T4';
 const TIMEOUT_MS=30000; // fallback only — use getTimeoutMs() at runtime
 function getTimeoutMs(){
@@ -388,9 +389,9 @@ const PAGE_SIZE=20,PC_CACHE={};
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 window.addEventListener('load',()=>{
-  const ak=localStorage.getItem('lp_ak'),mk=localStorage.getItem('lp_mk'),rb=localStorage.getItem('lp_rb');
+  const ak=localStorage.getItem('lp_ak'),apk=localStorage.getItem('rep_apify'),rb=localStorage.getItem('lp_rb');
   if(ak)document.getElementById('apiKey').value=ak;
-  if(mk)document.getElementById('mapsKey').value=mk;
+  if(apk&&document.getElementById('apifyKey'))document.getElementById('apifyKey').value=apk;
   if(rb)document.getElementById('runBy').value=rb;
   const saved=JSON.parse(localStorage.getItem('lp_customs')||'[]');
   const sel=document.getElementById('industrySelect');
@@ -399,8 +400,12 @@ window.addEventListener('load',()=>{
 });
 
 function saveKeys(){
-  const ak=document.getElementById('apiKey').value.trim(),mk=document.getElementById('mapsKey').value.trim(),rb=document.getElementById('runBy').value.trim();
-  if(ak)localStorage.setItem('lp_ak',ak);if(mk)localStorage.setItem('lp_mk',mk);if(rb)localStorage.setItem('lp_rb',rb);
+  const ak=document.getElementById('apiKey').value.trim();
+  const apk=document.getElementById('apifyKey')?document.getElementById('apifyKey').value.trim():'';
+  const rb=document.getElementById('runBy').value.trim();
+  if(ak)localStorage.setItem('lp_ak',ak);
+  if(apk)localStorage.setItem('rep_apify',apk);
+  if(rb)localStorage.setItem('lp_rb',rb);
   setStatus('Keys saved.','done');
 }
 
@@ -452,6 +457,33 @@ function updateCityHint(){
   document.getElementById('cityHint').textContent=`${e-s+1} postcodes`;
 }
 
+function getStateFromQueue(){
+  // Get state from city preset or first postcode
+  const mode=document.querySelector('input[name="pcmode"]:checked')?.value||'city';
+  if(mode==='city'){
+    const preset=document.getElementById('cityPreset').value;
+    if(preset){
+      const start=parseInt(preset.split('-')[0]);
+      if(start>=7000)return'TAS';
+      if(start>=6000)return'WA';
+      if(start>=5000)return'SA';
+      if(start>=4000)return'QLD';
+      if(start>=3000)return'VIC';
+      if(start>=2600&&start<=2639)return'ACT';
+      return'NSW';
+    }
+  }
+  const pc=document.getElementById('postcode').value||document.getElementById('postcodeRange').value.split('-')[0];
+  const n=parseInt(pc);
+  if(n>=7000)return'TAS';
+  if(n>=6000)return'WA';
+  if(n>=5000)return'SA';
+  if(n>=4000)return'QLD';
+  if(n>=3000)return'VIC';
+  if(n>=2600&&n<=2639)return'ACT';
+  return'NSW';
+}
+
 function getPostcodeQueue(){
   const m=document.querySelector('input[name="pcmode"]:checked').value;
   if(m==='single'){const pc=document.getElementById('postcode').value.trim();return pc.length===4?[pc]:[];}
@@ -468,6 +500,16 @@ function getPostcodeQueue(){
     return Array.from({length:e-s+1},(_,i)=>String(s+i).padStart(4,'0'));
   }
   return[];
+}
+
+function getYPKeyword(industry){
+  const map={
+    'real estate agency':'real estate',
+    'real estate principal':'real estate',
+    'buyers agent':'buyers agent',
+    'property management':'property management',
+  };
+  return map[industry.toLowerCase()]||industry;
 }
 
 function getIndustry(){
@@ -695,41 +737,58 @@ function getSearchQueries(industry){
   return aliases||[industry,industry+' business',industry+' office'];
 }
 
-async function fetchSingleQuery(mapsKey,query,suburb){
-  const resp=await fetch('https://places.googleapis.com/v1/places:searchText',{
-    method:'POST',
-    headers:{'Content-Type':'application/json','X-Goog-Api-Key':mapsKey,'X-Goog-FieldMask':'places.displayName,places.formattedAddress,places.nationalPhoneNumber,places.websiteUri,places.shortFormattedAddress'},
-    body:JSON.stringify({textQuery:`${query} in ${suburb} Australia`,maxResultCount:20,languageCode:'en'})
+async function runApify(apifyKey,actorId,input){
+  const r=await fetch(`https://api.apify.com/v2/acts/${actorId}/runs?token=${apifyKey}`,{
+    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(input)
   });
-  const data=await resp.json();
-  if(data.error)throw new Error('Google Maps: '+data.error.message);
-  return data.places||[];
+  if(!r.ok)throw new Error(`Apify start failed: ${r.status}`);
+  const runId=(await r.json()).data?.id;
+  if(!runId)throw new Error('No run ID returned');
+  for(let i=0;i<90;i++){
+    await new Promise(r=>setTimeout(r,5000));
+    const s=await(await fetch(`https://api.apify.com/v2/actor-runs/${runId}?token=${apifyKey}`)).json();
+    const status=s.data?.status;
+    if(status==='SUCCEEDED')break;
+    if(['FAILED','ABORTED','TIMED-OUT'].includes(status))throw new Error(`Apify: ${status}`);
+  }
+  const dr=await fetch(`https://api.apify.com/v2/actor-runs/${runId}/dataset/items?token=${apifyKey}&format=json&limit=2000`);
+  return await dr.json();
 }
 
-async function fetchPlaces(mapsKey,industry,suburb,maxResults){
-  const queries=getSearchQueries(industry);
-  const seen=new Set();
-  const all=[];
+function validatePhone(raw){
+  if(!raw)return null;
+  let p=String(raw).replace(/[\s\-().+]/g,'');
+  if(p.startsWith('+61'))p='0'+p.slice(3);
+  if(p.startsWith('61')&&p.length===11)p='0'+p.slice(2);
+  if(p.length===9&&p.startsWith('4'))p='0'+p;
+  if(!/^\d{10}$/.test(p))return null;
+  return p;
+}
 
-  for(const query of queries){
-    if(all.length>=maxResults)break;
-    try{
-      const places=await fetchSingleQuery(mapsKey,query,suburb);
-      for(const p of places){
-        const key=(p.displayName?.text||'').toLowerCase().trim();
-        if(key&&!seen.has(key)){
-          seen.add(key);
-          all.push(p);
-        }
-      }
-      // Small delay between queries to avoid rate limiting
-      if(queries.indexOf(query)<queries.length-1)await new Promise(r=>setTimeout(r,500));
-    }catch(e){
-      // If one query fails, continue with next
-      console.warn(`Maps query failed: ${query}`,e.message);
-    }
-  }
-  return all;
+// Convert YP item to Maps-compatible place object for the enrichment pipeline
+function ypToPlace(item,state){
+  const rawPhone=item.phone||item.phoneNumber||item.mobile||(item.phones&&item.phones[0])||item.telephone||'';
+  const phone=validatePhone(rawPhone)||rawPhone||'';
+  const name=item.name||item.businessName||item.title||'';
+  const suburb=item.suburb||item.city||item.location||'';
+  const website=item.website||item.websiteUrl||item.url||null;
+  return{
+    displayName:{text:name},
+    nationalPhoneNumber:phone,
+    shortFormattedAddress:`${suburb}, ${state}`,
+    formattedAddress:`${suburb}, ${state}`,
+    websiteUri:website,
+    _suburb:suburb,
+    _state:state
+  };
+}
+
+async function fetchFromYP(apifyKey,keyword,state,page){
+  const kwEncoded=encodeURIComponent(keyword);
+  const stateEncoded=encodeURIComponent(state);
+  const url=`https://www.yellowpages.com.au/search?search_terms=${kwEncoded}&geo_location_terms=${stateEncoded}${page>1?`&page=${page}`:''}`;
+  const items=await runApify(apifyKey,YP_ACTOR,{searchUrl:url});
+  return(items||[]).map(item=>ypToPlace(item,state));
 }
 
 // ─── Name cleaning ─────────────────────────────────────────────────────────────
@@ -1021,7 +1080,21 @@ function toggleRun(){
 }
 
 async function runQueue(){
-  const queue=getPostcodeQueue();
+  // For YP mode — generate page numbers as "postcodes"
+  // We run YP pages 1-20 (up to 20 pages × ~100 results = 2000 agencies per state)
+  const mode=document.querySelector('input[name="pcmode"]:checked')?.value||'city';
+  let queue=getPostcodeQueue();
+  if(mode==='city'||mode==='range'){
+    // Override with YP page queue — pages 1-20 represented as 4-digit strings
+    queue=Array.from({length:20},(_,i)=>`${String(i+1).padStart(4,'0')}`);
+    // Only run pages not yet done for this state+industry
+    const industry=getIndustry();
+    const state=getStateFromQueue();
+    const doneRows=await sbFetch(`prospecting_runs?state=eq.${state}&industry=ilike.${encodeURIComponent(industry)}&select=postcode`).catch(()=>[]);
+    const donePages=new Set((doneRows||[]).map(r=>r.postcode));
+    queue=queue.filter(p=>!donePages.has(p));
+    if(queue.length===0){setStatus(`All pages already scraped for ${industry} in ${state}.`,'done');return;}
+  }
   if(queue.length===0){setStatus('Enter a valid postcode, range, or select a city.','error');return;}
   const btn=document.getElementById('runBtn');
   btn.textContent='Stop ✕';btn.classList.add('btn-stop');
@@ -1053,27 +1126,31 @@ async function runQueue(){
   updateManualTabBadge();
 }
 
-// ─── Run single postcode ──────────────────────────────────────────────────────
+// ─── Run single YP page ──────────────────────────────────────────────────────
 async function runSearch(forcedPc){
   const apiKey=document.getElementById('apiKey').value.trim();
-  const mapsKey=document.getElementById('mapsKey').value.trim();
+  const apifyKey=localStorage.getItem('rep_apify')||document.getElementById('apifyKey').value.trim();
   const pc=forcedPc||document.getElementById('postcode').value.trim();
   const runBy=document.getElementById('runBy').value.trim()||'unknown';
-  if(!apiKey||!mapsKey){setStatus('Enter both API keys.','error');return;}
-  if(pc.length!==4){setStatus('Invalid postcode.','error');return;}
+  if(!apiKey){setStatus('Enter Anthropic API key.','error');return;}
+  if(!apifyKey){setStatus('Enter Apify token in Settings.','error');return;}
   if(targetHit()){setStatus('Target already reached.','done');return;}
 
+  // Use postcode to determine state, use page number stored in PC_CACHE
   const info=getPcInfo(pc);
-  const suburb=info.suburb||pc,state=info.state||'';
-  const industry=getIndustry(),batch=20;
+  const state=info.state||'';
+  const industry=getIndustry();
+  // Use postcode as page index — pc 0001=page1, 0002=page2 etc
+  const page=parseInt(pc)||1;
+  const keyword=getYPKeyword(industry);
 
   clearProgress();
-  setStatus(`Maps: ${industry} in ${suburb} (${pc})...`,'active');
-  addProgress(`Maps: "${industry}" in ${suburb}`,'active');
+  setStatus(`YP: "${keyword}" in ${state} page ${page}...`,'active');
+  addProgress(`YP: "${keyword}" in ${state} page ${page}`,'active');
 
   try{
-    const places=await fetchPlaces(mapsKey,industry,suburb,batch);
-    addProgress(`${places.length} companies from Google Maps`,'done');
+    const places=await fetchFromYP(apifyKey,keyword,state,page);
+    addProgress(`${places.length} companies from Yellow Pages`,'done');
 
     // Dedup — load ALL companies and mobiles globally across ALL postcodes and runs
     let existingCompanies=new Set();
@@ -1105,13 +1182,16 @@ async function runSearch(forcedPc){
       const phone=p.nationalPhoneNumber||'';
       const mobile=isMobileNumber(phone)?validateMobile(phone):null;
       const rawAddr=(p.shortFormattedAddress||p.formattedAddress||'');
-      // Use postcode for reliable state detection — address text is unreliable
-      const addrPostcodeRaw=extractPostcode(rawAddr);
-      const addrState=addrPostcodeRaw?stateFromPostcode(addrPostcodeRaw):extractState(rawAddr);
       // Skip big firms immediately
       if(isBigFirm(p.displayName?.text||'')){skipped++;return false;}
-      // Skip if wrong state — don't enrich, don't save, don't count
-      if(addrState&&state&&addrState!==state){skipped++;return false;}
+      // YP already filters by state — double check with phone area code
+      if(state&&p.nationalPhoneNumber){
+        const ph=p.nationalPhoneNumber.replace(/[\s\-().+]/g,'');
+        const areaMap={'02':['NSW','ACT'],'03':['VIC','TAS'],'07':['QLD'],'08':['WA','SA','NT']};
+        for(const[area,states]of Object.entries(areaMap)){
+          if(ph.startsWith(area)&&!states.includes(state)){skipped++;return false;}
+        }
+      }
       // Skip if matches exclusion keywords for this industry
       if(excludeList.some(kw=>name.includes(kw))){skipped++;return false;}
       // Skip if company already in DB
@@ -1120,34 +1200,31 @@ async function runSearch(forcedPc){
       if(mobile&&existingMobiles.has(mobile.replace(/\s/g,''))){skipped++;return false;}
       return true;
     }).map((p,i)=>{
-      const mapsPhone=p.nationalPhoneNumber||'—';
+      const ypPhone=p.nationalPhoneNumber||'—';
       const rawAddress=p.shortFormattedAddress||p.formattedAddress||'';
-      const cleanSuburb=extractSuburb(rawAddress)||suburb;
-      const addrState=extractState(rawAddress)||state;
-      const addrPostcode=extractPostcode(rawAddress)||pc;
-      const mapsIsMobile=isMobileNumber(mapsPhone);
-      const validatedMapsMobile=mapsIsMobile?validateMobile(mapsPhone):null;
-      // State always matches now — wrong state filtered above
-      const stateMatch=true;
+      const cleanSuburb=p._suburb||extractSuburb(rawAddress)||state;
+      const addrState=p._state||extractState(rawAddress)||state;
+      const ypIsMobile=isMobileNumber(ypPhone);
+      const validatedYPMobile=ypIsMobile?validateMobile(ypPhone):null;
       return{
         id:Date.now()+i,selected:true,excluded:false,
         company:p.displayName?.text||'—',website:p.websiteUri||null,
-        maps_phone:mapsPhone,rawAddress,cleanSuburb,state:addrState,postcode:addrPostcode,
+        maps_phone:ypPhone,rawAddress,cleanSuburb,state:addrState,postcode:pc,
         suburb:cleanSuburb,city:cleanSuburb,industry,
         contact:'—',title:'—',
-        mobile:validatedMapsMobile||'—',
-        mobile_verified:!!validatedMapsMobile,
-        mobile_source:validatedMapsMobile?'maps':'—',
+        mobile:validatedYPMobile||'—',
+        mobile_verified:!!validatedYPMobile,
+        mobile_source:validatedYPMobile?'yp':'—',
         email:'—',source_url:'—',
-        enriched:!!validatedMapsMobile,enriching:false,
-        enrich_status:validatedMapsMobile?'maps_mobile':'pending',
-        wrong_state:!stateMatch
+        enriched:!!validatedYPMobile,enriching:false,
+        enrich_status:validatedYPMobile?'maps_mobile':'pending',
+        wrong_state:false
       };
     });
 
     if(skipped>0)addProgress(`${skipped} already in DB — skipped`,'done');
     const mapsAutoCount=newLeads.filter(l=>l.enrich_status==='maps_mobile').length;
-    if(mapsAutoCount>0)addProgress(`⚡ ${mapsAutoCount} mobiles from Maps listing — no Claude needed`,'skip');
+    if(mapsAutoCount>0)addProgress(`⚡ ${mapsAutoCount} mobiles from YP listing — no Claude needed`,'skip');
     if(newLeads.length===0){setStatus(`All results already in DB for ${suburb}.`,'done');return;}
 
     leads.push(...newLeads);
