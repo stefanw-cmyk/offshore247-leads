@@ -1295,8 +1295,9 @@ async function runSearch(forcedPc){
     const mCount=enriched.filter(l=>l.mobile!=='—').length;
     const eCount=enriched.filter(l=>l.email!=='—').length;
     try{
-      const runId=await saveRun(pc,suburb,state,industry,enriched.length,mCount,eCount,runBy);
-      if(runId)await saveLeads(runId,enriched,pc,suburb,state,industry);
+      const suburbLabel=state+' (YP page '+page+')';
+      const runId=await saveRun(pc,suburbLabel,state,industry,enriched.length,mCount,eCount,runBy);
+      if(runId)await saveLeads(runId,enriched,pc,suburbLabel,state,industry);
       const wrongStateCount=newLeads.filter(l=>l.wrong_state).length;
       if(wrongStateCount>0)addProgress(`⚠ ${wrongStateCount} wrong-state leads flagged (not matching ${state})`, 'err');
       addProgress(`Saved to Supabase — ${skipped} duplicates skipped`,'done');
