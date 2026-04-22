@@ -783,16 +783,18 @@ function cleanRowsForExport(rows,industryFallback,filter){
     if(m)seenMobiles.add(m);
     if(c)seenCompanies.add(c);
 
-    const nameParts=(cleanedName||l.company||'').trim().split(/\s+/);
-    const firstName=nameParts.length>1?nameParts.slice(0,-1).join(' '):(nameParts[0]||'');
-    const lastName=nameParts.length>1?nameParts[nameParts.length-1]:'';
+    // Only split name if it's a real person name — never fall back to company name
+    const firstName=cleanedName?cleanedName.trim().split(/\s+/).slice(0,-1).join(' '):'';
+    const lastName=cleanedName?cleanedName.trim().split(/\s+/).slice(-1)[0]:'';
     const cleanCompany=(l.company||l.Company||'').split('|')[0].trim();
     const phone=l.maps_phone||l.Phone||'';
     const industry=l.industry||l.Industry||industryFallback||'';
+    // Format mobile as text to prevent Excel dropping leading zero
+    const mobileFormatted=mobile?`="${mobile}"`:'';
 
     clean.push([
       lastName,firstName,l.title||l.Title||'',cleanCompany,
-      phone,mobile||'',l.email||l.Email||'',l.website||l.Website||'',
+      phone,mobileFormatted,l.email||l.Email||'',l.website||l.Website||'',
       l.city||l.City||'',l.state||l.State||'','Australia',
       mapIndustry(industry),'Real Estate Prospector — Offshore 24/7','New','','','',''
     ]);
@@ -1486,7 +1488,8 @@ function mapIndustry(raw){if(!raw)return'';const k=raw.toLowerCase().trim();retu
 
 function downloadCSV(rows,filename){
   const csv=rows.map(r=>r.map(v=>`"${String(v||'').replace(/"/g,'""')}"`).join(',')).join('\n');
-  const blob=new Blob([csv],{type:'text/csv;charset=utf-8;'});
+  // \uFEFF = UTF-8 BOM — prevents Excel from corrupting special characters like em dashes
+  const blob=new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8;'});
   const url=URL.createObjectURL(blob);
   const a=document.createElement('a');a.href=url;a.download=filename;a.click();URL.revokeObjectURL(url);
 }
