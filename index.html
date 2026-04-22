@@ -713,20 +713,24 @@ async function fetchPlaces(mapsKey,industry,suburb,maxResults){
 
 // ─── Name cleaning ─────────────────────────────────────────────────────────────
 function cleanContactName(raw){
-  if(!raw||raw==='—'||raw==='null')return null;
+  if(!raw||raw==='—'||raw==='null'||raw==='undefined')return null;
   // Strip everything after & or ( or | or + or /
   let name=raw.split(/[&(|+\/]/)[0].trim();
-  // Remove common title suffixes that sneak in
-  name=name.replace(/\b(Founder|Director|Principal|CEO|MD|Owner|Manager|LIC|Partner|Co-Director|Managing)\b.*$/i,'').trim();
-  // Remove trailing punctuation
+  // Remove everything from known role/company words onwards
+  name=name.replace(/\b(Founder|Director|Principal|CEO|MD|Owner|Manager|LIC|Partner|Co-Director|Managing|Agent|Sales|Leasing|Property|Real|Estate|Realty|Team|Group|Agency|Office)\b.*$/i,'').trim();
+  // Remove trailing punctuation and dashes
   name=name.replace(/[,\-:]+$/,'').trim();
-  // Must be 2-50 chars
-  if(name.length<2||name.length>50)return null;
-  // Must contain at least one space (first + last name) — reject single names like "Bernadette"
+  // Must be at least 4 chars
+  if(name.length<4||name.length>50)return null;
+  // Must contain at least one space (first + last name)
   if(!name.includes(' '))return null;
-  // Reject if it looks like a company name
-  if(/\b(Pty|Ltd|Pty Ltd|Group|Agency|Real Estate|Property|Realty|Management|Services|Investments|Solutions|Holdings)\b/i.test(name))return null;
-  // Reject if name matches the company name exactly
+  // Each word must have at least 2 alpha chars — catches initials like "Mike T"
+  const parts=name.split(/\s+/);
+  if(parts.some(w=>w.replace(/[^a-zA-Z]/g,'').length<2))return null;
+  // Reject if contains company/brand/location words
+  if(/\b(Pty|Ltd|Group|Agency|Real Estate|Property|Realty|Management|Services|Investments|Solutions|Holdings|Partners|Associates|Consulting|Advisory|Capital|Trust|Fund|Enterprises|Industries|Technologies|Systems|Networks|International|National|Australia|Australian|Hooker|McGrath|Jellis|Harcourts|Coast|Fraser|Central|Eastern|Western|Northern|Southern|Heights|Valley|Hills|Park|North|South|East|West|Inner|Outer)\b/i.test(name))return null;
+  // Reject if more than 4 words
+  if(parts.length>4)return null;
   return name||null;
 }
 
@@ -756,7 +760,7 @@ function cleanRowsForExport(rows,industryFallback,filter){
   const seenCompanies=new Set();
   let blocked=0;
   const clean=[];
-  const f=filter||'named_mobile';// default keeps existing behaviour
+  const f=filter||'none';// default — export everything selected, user controls filter via radio buttons
 
   for(const l of rows){
     // Always block wrong state
@@ -908,12 +912,14 @@ Steps:
 Rules:
 - Return ONE person only — the most senior
 - Name = FIRST NAME LAST NAME only — no job titles, no brackets, no "and"
+- CRITICAL: Name must be a REAL PERSON — never return the business name or trading name as the contact
+- If you cannot find a real person's name, return null for contact
 - If multiple people shown, pick the owner/founder/principal
 - source_url is REQUIRED if returning a mobile — if you cannot provide it, return null for mobile
 - Do NOT guess or fabricate numbers
 
 Return ONLY raw JSON:
-{"contact":"First Last","title":"Title","mobile":"04xx xxx xxx or null","email":"email or null","source_url":"https://exact-page-url or null"}`;
+{"contact":"First Last or null","title":"Title or null","mobile":"04xx xxx xxx or null","email":"email or null","source_url":"https://exact-page-url or null"}`;
 
     const text=await callClaude(apiKey,prompt,getTimeoutMs(),1,maxS);
     const match=text.replace(/```json|```/g,'').trim().match(/\{[\s\S]*?\}/);
@@ -1046,20 +1052,21 @@ async function runSearch(forcedPc){
     const places=await fetchPlaces(mapsKey,industry,suburb,batch);
     addProgress(`${places.length} companies from Google Maps`,'done');
 
-    // Dedup — check both company name AND mobile against entire leads table (not just this postcode)
+    // Dedup — load ALL companies and mobiles globally across ALL postcodes and runs
     let existingCompanies=new Set();
     let existingMobiles=new Set();
     try{
-      const compRows=await sbFetch(`leads?postcode=eq.${pc}&industry=ilike.${encodeURIComponent(industry)}&select=company`);
-      existingCompanies=new Set((compRows||[]).map(r=>r.company.toLowerCase().trim()));
-      // Check mobiles globally across ALL runs to prevent cross-postcode duplicates
-      const mobileRows=await sbFetch(`leads?mobile=not.is.null&select=mobile&limit=10000`);
+      // Load companies globally for this industry — NOT filtered by postcode
+      const compRows=await sbFetch(`leads?industry=ilike.${encodeURIComponent(industry)}&select=company&limit=50000`);
+      existingCompanies=new Set((compRows||[]).map(r=>(r.company||'').toLowerCase().trim()));
+      // Load all mobiles globally
+      const mobileRows=await sbFetch(`leads?mobile=not.is.null&select=mobile&limit=50000`);
       existingMobiles=new Set((mobileRows||[]).map(r=>(r.mobile||'').replace(/\s/g,'')));
     }catch{}
-    // CRITICAL: Also add mobiles found THIS run so we never enrich the same company twice in one session
+    // Also add everything found THIS run (in-memory) so same-session dedup works
     for(const l of leads){
       if(l.mobile&&l.mobile!=='—')existingMobiles.add(l.mobile.replace(/\s/g,''));
-      if(l.company)existingCompanies.add(l.company.toLowerCase().trim());
+      if(l.company&&l.company!=='—')existingCompanies.add(l.company.toLowerCase().trim());
     }
 
     // Exclusion keywords — filter out false positives before enrichment
