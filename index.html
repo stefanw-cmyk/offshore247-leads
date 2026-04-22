@@ -1136,11 +1136,10 @@ async function runSearch(forcedPc){
   if(!apifyKey){setStatus('Enter Apify token in Settings.','error');return;}
   if(targetHit()){setStatus('Target already reached.','done');return;}
 
-  // Use postcode to determine state, use page number stored in PC_CACHE
-  const info=getPcInfo(pc);
-  const state=info.state||'';
+  // State comes from the city preset or postcode range selection
+  const state=getStateFromQueue();
   const industry=getIndustry();
-  // Use postcode as page index — pc 0001=page1, 0002=page2 etc
+  // pc is used as page number (0001=page1, 0002=page2 etc)
   const page=parseInt(pc)||1;
   const keyword=getYPKeyword(industry);
 
@@ -1225,7 +1224,7 @@ async function runSearch(forcedPc){
     if(skipped>0)addProgress(`${skipped} already in DB — skipped`,'done');
     const mapsAutoCount=newLeads.filter(l=>l.enrich_status==='maps_mobile').length;
     if(mapsAutoCount>0)addProgress(`⚡ ${mapsAutoCount} mobiles from YP listing — no Claude needed`,'skip');
-    if(newLeads.length===0){setStatus(`All results already in DB for ${suburb}.`,'done');return;}
+    if(newLeads.length===0){setStatus(`All results already in DB for ${state} page ${page}.`,'done');return;}
 
     leads.push(...newLeads);
     renderTable();updateCounts();
@@ -1255,7 +1254,7 @@ async function runSearch(forcedPc){
       const prog=addProgress(`[${i+1}/${needsEnrich.length}] ${lead.company}`,'active');
 
       try{
-        const result=await enrichLead(apiKey,lead,industry,suburb,state);
+        const result=await enrichLead(apiKey,lead,industry,lead.cleanSuburb||lead.suburb||state,state);
         // Clean name — strip brackets, titles, multiple people
         const cleanedContact=result.contact?cleanContactName(result.contact):null;
         lead.contact=cleanedContact||'—';
@@ -1303,7 +1302,7 @@ async function runSearch(forcedPc){
       addProgress(`Saved to Supabase — ${skipped} duplicates skipped`,'done');
     }catch(dbErr){addProgress(`DB save issue: ${dbErr.message.slice(0,60)}`,'err');}
 
-    setStatus(`${suburb} done — ${mCount} mobiles (${mapsAutoCount} from Maps, ${mCount-mapsAutoCount} from Claude).`,'done');
+    setStatus(`${state} page ${page} done — ${mCount} mobiles from YP + Claude.`,'done');
   }catch(err){setStatus('Error: '+err.message,'error');addProgress('Failed: '+err.message,'err');}
 }
 
