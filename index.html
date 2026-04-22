@@ -627,6 +627,13 @@ async function sbFetch(path,opts={}){
   try{return JSON.parse(text);}catch{return null;}
 }
 
+async function saveLeadsOnly(enriched,pc,suburb,state,industry){
+  if(!enriched.length)return;
+  try{
+    await saveLeads(null,enriched,pc,suburb,state,industry);
+  }catch(e){console.error('saveLeadsOnly failed:',e.message);}
+}
+
 async function saveRun(pc,suburb,state,industry,lCount,mCount,eCount,runBy){
   const rows=await sbFetch('prospecting_runs',{method:'POST',prefer:'return=representation',body:JSON.stringify({postcode:pc,suburb,state,industry,lead_count:lCount,mobile_count:mCount,email_count:eCount,run_by:runBy})});
   return rows&&rows[0]?rows[0].id:null;
@@ -1287,16 +1294,26 @@ async function runSearch(forcedPc){
     const enriched=newLeads.filter(l=>l.enriched);
     const mCount=enriched.filter(l=>l.mobile!=='—').length;
     const eCount=enriched.filter(l=>l.email!=='—').length;
+    // Only mark page as DONE if we processed every lead on it
+    // If target was hit mid-page, don't mark done — next run will continue from this page
+    const allProcessed=newLeads.every(l=>l.enriched||l.enrich_status==='maps_mobile'||l.enrich_status==='skipped_dup'||!l.website);
+    const pageComplete=allProcessed&&!stopRequested;
     try{
       const suburbLabel=state+' (YP page '+page+')';
-      const runId=await saveRun(pc,suburbLabel,state,industry,enriched.length,mCount,eCount,runBy);
-      if(runId)await saveLeads(runId,enriched,pc,suburbLabel,state,industry);
-      const wrongStateCount=newLeads.filter(l=>l.wrong_state).length;
-      if(wrongStateCount>0)addProgress(`⚠ ${wrongStateCount} wrong-state leads flagged (not matching ${state})`, 'err');
+      // Only save run record (marks page done) if fully processed
+      if(pageComplete){
+        const runId=await saveRun(pc,suburbLabel,state,industry,enriched.length,mCount,eCount,runBy);
+        if(runId)await saveLeads(runId,enriched,pc,suburbLabel,state,industry);
+        addProgress(`Page ${page} complete — ${mCount} mobiles · marked done`,'done');
+      } else {
+        // Save leads but don't mark page as done — will resume here next run
+        await saveLeadsOnly(enriched,pc,suburbLabel,state,industry);
+        addProgress(`Page ${page} partial — ${mCount} mobiles · will resume here next run`,'done');
+      }
       addProgress(`Saved to Supabase — ${skipped} duplicates skipped`,'done');
     }catch(dbErr){addProgress(`DB save issue: ${dbErr.message.slice(0,60)}`,'err');}
 
-    setStatus(`${state} page ${page} done — ${mCount} mobiles from YP + Claude.`,'done');
+    setStatus(`${state} page ${page} ${pageComplete?'complete':'partial'} — ${mCount} mobiles from YP + Claude.`,'done');
   }catch(err){setStatus('Error: '+err.message,'error');addProgress('Failed: '+err.message,'err');}
 }
 
