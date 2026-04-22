@@ -875,7 +875,7 @@ function cleanRowsForExport(rows,industryFallback,filter){
 
     clean.push([
       lastName,firstName,l.title||l.Title||'',cleanCompany,
-      phone,mobileFormatted,l.email||l.Email||'',l.website||l.Website||'',
+      phone,mobileFormatted,(l.email||l.Email||'').replace(/^—$/,''),l.website||l.Website||'',
       l.city||l.City||'',l.state||l.State||'','Australia',
       mapIndustry(industry),'Real Estate Prospector — Offshore 24/7','New','','','',''
     ]);
@@ -1232,21 +1232,18 @@ async function runSearch(forcedPc){
     document.getElementById('exportBtn').disabled=false;
     document.getElementById('selectAllBtn').disabled=false;
 
-    // Pre-enrichment gate — only enrich correct state + has website leads
-    const wrongStateLeads=newLeads.filter(l=>l.wrong_state);
-    const noWebsiteLeads=newLeads.filter(l=>!l.wrong_state&&!l.enriched&&!l.website);
-    const needsEnrich=newLeads.filter(l=>!l.enriched&&l.website&&l.enrich_status!=='maps_mobile'&&!l.wrong_state);
-    if(wrongStateLeads.length>0)addProgress(`⚠ ${wrongStateLeads.length} wrong-state — enrichment skipped`,'skip');
-    if(noWebsiteLeads.length>0)addProgress(`∅ ${noWebsiteLeads.length} no website — sent to manual`,'skip');
-    setStatus(`${needsEnrich.length} leads queued for enrichment (${wrongStateLeads.length} wrong state + ${noWebsiteLeads.length} no website skipped)...`,'active');
+    // Enrich leads one by one — stop the moment target is hit
+    // This prevents burning a full page when target only needs a few more
+    const noWebsiteLeads=newLeads.filter(l=>!l.enriched&&!l.website);
+    const needsEnrich=newLeads.filter(l=>!l.enriched&&l.website&&l.enrich_status!=='maps_mobile');
+    if(noWebsiteLeads.length>0)addProgress(`∅ ${noWebsiteLeads.length} no website — skipped`,'skip');
+    setStatus(`Enriching ${needsEnrich.length} leads — stop at target...`,'active');
 
     for(let i=0;i<needsEnrich.length;i++){
       if(stopRequested||targetHit())break;
-      // Skip enrichment if company mobile already found this run
       const lead=needsEnrich[i];
       const compKey=lead.company.toLowerCase().trim();
       if(existingCompanies.has(compKey)){
-        addProgress(`⚡ ${lead.company} — already found this run, skipping`,'skip');
         lead.enrich_status='skipped_dup';lead.enriched=true;
         pushToManual(lead);continue;
       }
@@ -1256,25 +1253,21 @@ async function runSearch(forcedPc){
 
       try{
         const result=await enrichLead(apiKey,lead,industry,lead.cleanSuburb||lead.suburb||state,state);
-        // Clean name — strip brackets, titles, multiple people
         const cleanedContact=result.contact?cleanContactName(result.contact):null;
         lead.contact=cleanedContact||'—';
         lead.title=result.title||'—';
-        // Validate mobile — fix leading zero, reject if malformed
         const validMobile=result.mobile?validateMobile(result.mobile):null;
         lead.mobile=validMobile||'—';
         lead.mobile_verified=!!validMobile&&result.source!=='claude';
-        // Add to in-run dedup sets immediately so next postcode skips this company/mobile
         if(validMobile)existingMobiles.add(validMobile.replace(/\s/g,''));
         lead.source_url=result.source_url||'—';
         lead.email=result.email||'—';
         lead.enrich_source=result.source||'none';
         lead.enrich_status=validMobile?'found':result.claudeError?result.claudeError==='timeout'?'timeout':'error':'no_mobile';
-
         const sourceLabel=result.free?`⚡ ${result.source||'free'}`:result.source==='claude'?'claude':'—';
         prog.className='prog-item done';
         prog.querySelector('.tick').textContent='✓';
-        prog.querySelector('span:last-child').textContent=`${lead.company} — ${lead.contact}${validMobile?' · '+validMobile+' ('+sourceLabel+')':result.mobile&&!validMobile?' · ⚠ rejected mobile ('+result.mobile+')':' · no mobile → manual'}`;
+        prog.querySelector('span:last-child').textContent=`${lead.company} — ${lead.contact}${validMobile?' · '+validMobile+' ('+sourceLabel+')':' · no mobile'}`;
       }catch(err){
         lead.enrich_status='error';
         prog.className='prog-item err';
@@ -1287,7 +1280,7 @@ async function runSearch(forcedPc){
       if(i<needsEnrich.length-1&&!stopRequested&&!targetHit())await new Promise(r=>setTimeout(r,2000));
     }
 
-    // Also push maps-mobile leads that have no name to manual for name lookup
+    // Push YP-mobile leads with no name to manual for name lookup
     newLeads.filter(l=>l.enrich_status==='maps_mobile'&&l.contact==='—').forEach(l=>pushToManual(l,true));
 
     // Save to Supabase
