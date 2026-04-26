@@ -722,7 +722,7 @@ function getIndustryConfig(industry){
 }
 // Industry aliases — multiple search terms per industry to get more results
 const INDUSTRY_ALIASES={
-  'real estate agency':['real estate agency','real estate agent','property management','real estate principal','real estate office'],
+  'real estate agency':['real estate agency','real estate agent','real estate office'],
   'accounting firm':['accounting firm','accountant','CPA firm','chartered accountant','tax agent'],
   'law firm':['law firm','solicitor','lawyer','legal practice','barrister'],
   'mortgage broker':['mortgage broker','home loan broker','finance broker','mortgage lender'],
@@ -1231,6 +1231,20 @@ async function runSearch(forcedPc){
       const rawAddr=(p.shortFormattedAddress||p.formattedAddress||'');
       // Skip big firms immediately
       if(isBigFirm(p.displayName?.text||'')){skipped++;return false;}
+      // For real estate — reject businesses that are clearly NOT real estate agencies
+      // YP returns conveyancers, builders, caravan repairers etc under "real estate" search
+      if(industry.toLowerCase().includes('real estate')){
+        const nameL=(p.displayName?.text||'').toLowerCase();
+        // Must contain at least one real estate indicator OR be a known RE brand
+        const reKeywords=['real estate','realty','property','harcourts','ray white','lj hooker','century 21','raine','first national','mcgrath','jellis','barry plant','elders','professionals','one agency','eis','fall ','petrusma','parry','4one4','view ','roberts','raine'];
+        const hasREKeyword=reKeywords.some(k=>nameL.includes(k));
+        // Block if name contains clear non-RE business indicators
+        const nonREKeywords=['caravan','crash','smash','tyre','auto','mechanic','plumb','electr','build','construct','conveyancing','conveyancer','lawyer','solicitor','accounting','accountant','financial','insurance','dental','medical','optom','physio','recruit','staffing','cleaning','pest','garden','landscap','security','solar','pool','carpet','paint','roof','tile','fence','concrete','carpet','home builder','home design','display home','volume builder'];
+        const hasNonRE=nonREKeywords.some(k=>nameL.includes(k));
+        if(!hasREKeyword&&hasNonRE){skipped++;return false;}
+        // Block builders/developers without RE keyword
+        if(!hasREKeyword&&/\b(homes|constructions?|developments?|builders?|building)\b/.test(nameL)){skipped++;return false;}
+      }
       // YP already filters by state — double check with phone area code
       if(state&&p.nationalPhoneNumber){
         const ph=p.nationalPhoneNumber.replace(/[\s\-().+]/g,'');
