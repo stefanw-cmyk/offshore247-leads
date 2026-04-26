@@ -19,7 +19,7 @@
   .tab:hover:not(.active){border-color:var(--accent);color:var(--text)}
   .tab .badge{display:inline-block;background:var(--warning);color:#0d0f0e;border-radius:3px;font-size:10px;padding:0 5px;margin-left:5px;font-weight:700}
   .pane{display:none}.pane.active{display:block}
-  .keys-row{display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;margin-bottom:16px;align-items:end}
+  .keys-row{display:grid;grid-template-columns:1fr 1fr 1fr 1fr auto;gap:8px;margin-bottom:16px;align-items:end}
   .field-wrap{display:flex;flex-direction:column;gap:5px}
   .field-wrap label{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}
   input[type=text],input[type=password],input[type=number],select{background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:13px;padding:9px 12px;border-radius:4px;outline:none;width:100%;transition:border-color .15s}
@@ -117,7 +117,7 @@
 <div class="header">
   <div style="display:flex;align-items:baseline">
     <h1>Real Estate Prospector</h1>
-    <span>Offshore 24/7 · Yellow Pages + Claude enrichment</span>
+    <span>Offshore 24/7 · Yellow Pages + Google Reviews filter + Claude enrichment</span>
   </div>
   <div class="tabs">
     <button class="tab active" onclick="switchTab('prospect')">Prospect</button>
@@ -133,6 +133,7 @@
   <div class="keys-row">
     <div class="field-wrap"><label>Anthropic API Key</label><input type="password" id="apiKey" placeholder="sk-ant-..." autocomplete="off"/></div>
     <div class="field-wrap"><label>Apify Token</label><input type="password" id="apifyKey" placeholder="apify_api_..." autocomplete="off"/></div>
+    <div class="field-wrap"><label>Google Places API Key</label><input type="password" id="placesKey" placeholder="AIza..." autocomplete="off"/></div>
     <div class="field-wrap"><label>Your name (run log)</label><input type="text" id="runBy" placeholder="e.g. Stefan"/></div>
     <button class="btn-ghost" onclick="saveKeys()" style="margin-top:auto">Save</button>
   </div>
@@ -176,10 +177,7 @@
     <div class="field-wrap">
       <label>Industry / Business Type</label>
       <select id="industrySelect" onchange="handleIndustryChange()">
-        <option value="real estate agency">Real Estate Agency</option>
-        <option value="real estate principal">Real Estate Principal / Director</option>
-        <option value="buyers agent">Buyers Agent</option>
-        <option value="property management">Property Management Company</option>
+        <option value="real estate agency">Real Estate Agency (Owner / Principal)</option>
         <option value="custom">Custom...</option>
       </select>
     </div>
@@ -389,22 +387,25 @@ const PAGE_SIZE=20,PC_CACHE={};
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 window.addEventListener('load',()=>{
-  const ak=localStorage.getItem('lp_ak'),apk=localStorage.getItem('rep_apify'),rb=localStorage.getItem('lp_rb');
+  const ak=localStorage.getItem('lp_ak'),apk=localStorage.getItem('rep_apify'),gk=localStorage.getItem('rep_gk'),rb=localStorage.getItem('lp_rb');
   if(ak)document.getElementById('apiKey').value=ak;
   if(apk&&document.getElementById('apifyKey'))document.getElementById('apifyKey').value=apk;
+  if(gk&&document.getElementById('placesKey'))document.getElementById('placesKey').value=gk;
   if(rb)document.getElementById('runBy').value=rb;
   const saved=JSON.parse(localStorage.getItem('lp_customs')||'[]');
   const sel=document.getElementById('industrySelect');
   saved.forEach(v=>{const o=document.createElement('option');o.value=v;o.textContent=v;sel.insertBefore(o,sel.querySelector('option[value="custom"]'));});
-  if(ak&&mk)setStatus('Keys loaded. Enter a postcode and click Prospect.','');
+  if(ak)setStatus('Keys loaded. Enter a postcode and click Prospect.','');
 });
 
 function saveKeys(){
   const ak=document.getElementById('apiKey').value.trim();
   const apk=document.getElementById('apifyKey')?document.getElementById('apifyKey').value.trim():'';
+  const gk=document.getElementById('placesKey')?document.getElementById('placesKey').value.trim():'';
   const rb=document.getElementById('runBy').value.trim();
   if(ak)localStorage.setItem('lp_ak',ak);
   if(apk)localStorage.setItem('rep_apify',apk);
+  if(gk)localStorage.setItem('rep_gk',gk);
   if(rb)localStorage.setItem('lp_rb',rb);
   setStatus('Keys saved.','done');
 }
@@ -710,7 +711,7 @@ const INDUSTRY_CONFIG={
 };
 
 // Big firm blocklist — skip national/global firms not relevant for offshore staffing
-const BIG_FIRM_NAMES=['kpmg','deloitte','pwc','pricewaterhousecoopers','ernst & young',' ey ','grant thornton','bdo ','rsm ','pitcher partners','colliers','cbre','jll','jones lang','savills','knight frank','cushman','ray white corporate','lj hooker corporate','century 21 corporate','harcourts corporate','barry plant corporate','raine & horne corporate','mcgrath corporate','place corporate','coronis corporate','first national corporate'];
+const BIG_FIRM_NAMES=['kpmg','deloitte','pwc','pricewaterhousecoopers','ernst & young',' ey ','grant thornton','bdo ','rsm ','pitcher partners','colliers','cbre','jll','jones lang','savills','knight frank','cushman','buyers agent','buyers agency','buyers advocate','buyers advocacy','buyer agency','buyer agent','buyer advocate','ray white corporate','lj hooker corporate','century 21 corporate','harcourts corporate','barry plant corporate','raine & horne corporate','mcgrath corporate','place corporate','coronis corporate','first national corporate'];
 function isBigFirm(name){
   const n=(name||'').toLowerCase();
   return BIG_FIRM_NAMES.some(b=>n.includes(b));
@@ -801,22 +802,19 @@ async function fetchFromYP(apifyKey,keyword,state,page){
 // ─── Name cleaning ─────────────────────────────────────────────────────────────
 function cleanContactName(raw){
   if(!raw||raw==='—'||raw==='null'||raw==='undefined')return null;
+  // Reject if raw contains buyers agent / buyers agency — we never want these people
+  if(/buyers?\s*(agent|agency|advocate|advocacy)/i.test(raw))return null;
   // Strip everything after & or ( or | or + or /
   let name=raw.split(/[&(|+\/]/)[0].trim();
-  // Remove everything from known role/company words onwards
-  name=name.replace(/\b(Founder|Director|Principal|CEO|MD|Owner|Manager|LIC|Partner|Co-Director|Managing|Agent|Sales|Leasing|Property|Real|Estate|Realty|Team|Group|Agency|Office)\b.*$/i,'').trim();
-  // Remove trailing punctuation and dashes
+  // Strip trailing job titles and descriptors
+  name=name.replace(/\b(Founder|Director|Principal|CEO|MD|Owner|Manager|LIC|LREA|Partner|Co-Director|Managing|Agent|Sales|Leasing|Property|Real|Estate|Realty|Team|Group|Agency|Office|Buyers?|Consultant|Advisor|Representative|Rep|Licensee)\b.*$/i,'').trim();
   name=name.replace(/[,\-:]+$/,'').trim();
-  // Must be at least 4 chars
   if(name.length<4||name.length>50)return null;
-  // Must contain at least one space (first + last name)
   if(!name.includes(' '))return null;
-  // Each word must have at least 2 alpha chars — catches initials like "Mike T"
   const parts=name.split(/\s+/);
   if(parts.some(w=>w.replace(/[^a-zA-Z]/g,'').length<2))return null;
-  // Reject if contains company/brand/location words
-  if(/\b(Pty|Ltd|Group|Agency|Real Estate|Property|Realty|Management|Services|Investments|Solutions|Holdings|Partners|Associates|Consulting|Advisory|Capital|Trust|Fund|Enterprises|Industries|Technologies|Systems|Networks|International|National|Australia|Australian|Hooker|McGrath|Jellis|Harcourts|Coast|Fraser|Central|Eastern|Western|Northern|Southern|Heights|Valley|Hills|Park|North|South|East|West|Inner|Outer)\b/i.test(name))return null;
-  // Reject if more than 4 words
+  // Reject if contains company/brand words
+  if(/\b(Pty|Ltd|Group|Agency|Real\s*Estate|Property|Realty|Management|Services|Holdings|Partners|Associates|International|National|Australia|Australian|Hooker|McGrath|Jellis|Harcourts|Ray\s*White|Barry\s*Plant|Elders|Raine|Horne|Century|Coast|Central|Eastern|Western|Northern|Southern|Hills|Park|North|South|East|West|Buyers?|Team|Office)\b/i.test(name))return null;
   if(parts.length>4)return null;
   return name||null;
 }
@@ -891,6 +889,44 @@ function cleanRowsForExport(rows,industryFallback,filter){
 }
 
 // ─── Multi-source enrichment pipeline ────────────────────────────────────────
+// ─── Google Places quality filter ────────────────────────────────────────────
+// Returns {pass:bool, suburb:string, rating:number, reviews:number}
+async function checkGoogleQuality(placesKey, company, suburb, state){
+  if(!placesKey)return{pass:true,suburb:suburb,rating:null,reviews:null};
+  try{
+    // Text search for the business
+    const query=encodeURIComponent(`${company} ${suburb||state} Australia real estate`);
+    const url=`https://places.googleapis.com/v1/places:searchText`;
+    const resp=await fetch(url,{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'X-Goog-Api-Key':placesKey,
+        'X-Goog-FieldMask':'places.displayName,places.rating,places.userRatingCount,places.formattedAddress,places.addressComponents'
+      },
+      body:JSON.stringify({textQuery:`${company} ${suburb||state} real estate`,maxResultCount:1,languageCode:'en'})
+    });
+    if(!resp.ok)return{pass:true,suburb:suburb,rating:null,reviews:null};
+    const data=await resp.json();
+    const place=data.places&&data.places[0];
+    if(!place)return{pass:true,suburb:suburb,rating:null,reviews:null};
+    const rating=place.rating||0;
+    const reviews=place.userRatingCount||0;
+    // Extract suburb from address components
+    let foundSuburb=suburb;
+    if(place.addressComponents){
+      const loc=place.addressComponents.find(c=>c.types&&c.types.includes('locality'));
+      if(loc)foundSuburb=loc.longText||suburb;
+    }
+    // Quality gate: must have 10+ reviews and 3.5+ stars
+    // (lower threshold than BD intelligence discussed — 10 reviews = established, 3.5 = not a disaster)
+    const pass=reviews>=10&&rating>=3.5;
+    return{pass,suburb:foundSuburb,rating,reviews};
+  }catch(e){
+    return{pass:true,suburb:suburb,rating:null,reviews:null};// fail open — don't block if API error
+  }
+}
+
 async function enrichLead(apiKey,lead,industry,suburb,state){
   if(!apiKey)return{mobile:null,contact:null,title:null,email:null,source:null,free:false};
   const company=lead.company;
@@ -913,7 +949,9 @@ Also check:
 ${landline?`Their office landline is ${landline} — use this to find the right business listing.`:''}
 
 Rules:
-- Return ONE person only — the most senior (owner, principal, director, licensee, founder)
+- Return ONE person only — the BUSINESS OWNER, PRINCIPAL, or DIRECTOR who runs the agency
+- NEVER return a buyers agent, property manager, leasing consultant, sales agent, or junior staff
+- NEVER return franchise brand staff (Ray White area manager, Harcourts regional etc)
 - Name must be FIRST NAME LAST NAME only — no titles, no brackets, no "and", no job titles in the name
 - Mobile must be 04xx format — direct mobile only, not office number
 - If mobile found in a directory listing with a URL, return that URL as source_url
@@ -923,7 +961,7 @@ Return ONLY raw JSON:
 {"contact":"First Last","title":"Their Title","mobile":"04xx xxx xxx or null","email":"email or null","source_url":"https://url or null","source":"yellowpages/reiwa/truelocal/whitepages/google/none"}`;
 
   try{
-    const text1=await callClaude(apiKey,googlePrompt,20000,1,maxS);
+    const text1=await callClaude(apiKey,googlePrompt,15000,1,2);// 2 searches max — directory lookup is fast
     const match1=text1.replace(/```json|```/g,'').trim().match(/\{[\s\S]*?\}/);
     if(match1){
       const d=JSON.parse(match1[0]);
@@ -961,7 +999,7 @@ Rules:
 Return ONLY raw JSON:
 {"contact":"${cleanedName}","title":"Title or null","mobile":"04xx xxx xxx or null","email":"email or null","source_url":"https://exact-page-url or null"}`;
         try{
-          const text2=await callClaude(apiKey,webPrompt,getTimeoutMs(),1,maxS);
+          const text2=await callClaude(apiKey,webPrompt,getTimeoutMs(),1,2);// 2 searches max for website visit
           const match2=text2.replace(/```json|```/g,'').trim().match(/\{[\s\S]*?\}/);
           if(match2){
             const w=JSON.parse(match2[0]);
@@ -1000,18 +1038,20 @@ Steps:
 4. Return the exact URL of the page where you found the mobile
 
 Rules:
-- Return ONE person only — the most senior
+- Return ONE person only — the BUSINESS OWNER, PRINCIPAL, DIRECTOR or FOUNDER who runs the agency
+- NEVER return a buyers agent, property manager, leasing consultant, sales agent, or junior staff member
+- NEVER return a franchise brand manager or area/state manager
 - Name = FIRST NAME LAST NAME only — no job titles, no brackets, no "and"
 - CRITICAL: Name must be a REAL PERSON — never return the business name or trading name as the contact
 - If you cannot find a real person's name, return null for contact
-- If multiple people shown, pick the owner/founder/principal
+- If multiple people shown, pick the most senior: Owner > Principal > Director > Founder > LIC
 - source_url is REQUIRED if returning a mobile — if you cannot provide it, return null for mobile
 - Do NOT guess or fabricate numbers
 
 Return ONLY raw JSON:
 {"contact":"First Last or null","title":"Title or null","mobile":"04xx xxx xxx or null","email":"email or null","source_url":"https://exact-page-url or null"}`;
 
-    const text=await callClaude(apiKey,prompt,getTimeoutMs(),1,maxS);
+    const text=await callClaude(apiKey,prompt,getTimeoutMs(),1,3);// 3 searches for full website visit
     const match=text.replace(/```json|```/g,'').trim().match(/\{[\s\S]*?\}/);
     if(match){
       const e=JSON.parse(match[0]);
@@ -1259,7 +1299,19 @@ async function runSearch(forcedPc){
       const prog=addProgress(`[${i+1}/${needsEnrich.length}] ${lead.company}`,'active');
 
       try{
-        const result=await enrichLead(apiKey,lead,industry,lead.cleanSuburb||lead.suburb||state,state);
+        // Google Places quality filter — check reviews/rating, get real suburb
+      const placesKey=localStorage.getItem('rep_gk')||'';
+      if(placesKey){
+        const qCheck=await checkGoogleQuality(placesKey,lead.company,lead.cleanSuburb||lead.suburb||state,state);
+        if(!qCheck.pass){
+          lead.enrich_status='filtered_quality';lead.enriched=true;
+          const prog2=addProgress(`[${i+1}/${needsEnrich.length}] ${lead.company} — filtered (${qCheck.reviews||0} reviews, ${qCheck.rating||0}★)`,'skip');
+          renderTable();continue;
+        }
+        // Use suburb from Places API if available — more accurate than YP
+        if(qCheck.suburb&&qCheck.suburb!==state)lead.cleanSuburb=qCheck.suburb;
+      }
+      const result=await enrichLead(apiKey,lead,industry,lead.cleanSuburb||lead.suburb||state,state);
         const cleanedContact=result.contact?cleanContactName(result.contact):null;
         lead.contact=cleanedContact||'—';
         lead.title=result.title||'—';
