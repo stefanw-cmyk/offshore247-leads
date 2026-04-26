@@ -176,10 +176,7 @@
     <div class="field-wrap">
       <label>Industry / Business Type</label>
       <select id="industrySelect" onchange="handleIndustryChange()">
-        <option value="real estate agency">Real Estate Agency</option>
-        <option value="real estate principal">Real Estate Principal / Director</option>
-        <option value="buyers agent">Buyers Agent</option>
-        <option value="property management">Property Management Company</option>
+        <option value="real estate agency">Real Estate Agency (Owner / Principal)</option>
         <option value="custom">Custom...</option>
       </select>
     </div>
@@ -396,7 +393,7 @@ window.addEventListener('load',()=>{
   const saved=JSON.parse(localStorage.getItem('lp_customs')||'[]');
   const sel=document.getElementById('industrySelect');
   saved.forEach(v=>{const o=document.createElement('option');o.value=v;o.textContent=v;sel.insertBefore(o,sel.querySelector('option[value="custom"]'));});
-  if(ak&&mk)setStatus('Keys loaded. Enter a postcode and click Prospect.','');
+  if(ak)setStatus('Keys loaded. Enter a postcode and click Prospect.','');
 });
 
 function saveKeys(){
@@ -710,7 +707,7 @@ const INDUSTRY_CONFIG={
 };
 
 // Big firm blocklist — skip national/global firms not relevant for offshore staffing
-const BIG_FIRM_NAMES=['kpmg','deloitte','pwc','pricewaterhousecoopers','ernst & young',' ey ','grant thornton','bdo ','rsm ','pitcher partners','colliers','cbre','jll','jones lang','savills','knight frank','cushman','ray white corporate','lj hooker corporate','century 21 corporate','harcourts corporate','barry plant corporate','raine & horne corporate','mcgrath corporate','place corporate','coronis corporate','first national corporate'];
+const BIG_FIRM_NAMES=['kpmg','deloitte','pwc','pricewaterhousecoopers','ernst & young',' ey ','grant thornton','bdo ','rsm ','pitcher partners','colliers','cbre','jll','jones lang','savills','knight frank','cushman','buyers agent','buyers agency','buyers advocate','buyers advocacy','buyer agency','buyer agent','buyer advocate','ray white corporate','lj hooker corporate','century 21 corporate','harcourts corporate','barry plant corporate','raine & horne corporate','mcgrath corporate','place corporate','coronis corporate','first national corporate'];
 function isBigFirm(name){
   const n=(name||'').toLowerCase();
   return BIG_FIRM_NAMES.some(b=>n.includes(b));
@@ -721,7 +718,7 @@ function getIndustryConfig(industry){
 }
 // Industry aliases — multiple search terms per industry to get more results
 const INDUSTRY_ALIASES={
-  'real estate agency':['real estate agency','real estate agent','property management','real estate principal','real estate office'],
+  'real estate agency':['real estate agency','real estate agent','real estate office'],
   'accounting firm':['accounting firm','accountant','CPA firm','chartered accountant','tax agent'],
   'law firm':['law firm','solicitor','lawyer','legal practice','barrister'],
   'mortgage broker':['mortgage broker','home loan broker','finance broker','mortgage lender'],
@@ -801,22 +798,19 @@ async function fetchFromYP(apifyKey,keyword,state,page){
 // ─── Name cleaning ─────────────────────────────────────────────────────────────
 function cleanContactName(raw){
   if(!raw||raw==='—'||raw==='null'||raw==='undefined')return null;
+  // Reject if raw contains buyers agent / buyers agency — we never want these people
+  if(/buyers?\s*(agent|agency|advocate|advocacy)/i.test(raw))return null;
   // Strip everything after & or ( or | or + or /
   let name=raw.split(/[&(|+\/]/)[0].trim();
-  // Remove everything from known role/company words onwards
-  name=name.replace(/\b(Founder|Director|Principal|CEO|MD|Owner|Manager|LIC|Partner|Co-Director|Managing|Agent|Sales|Leasing|Property|Real|Estate|Realty|Team|Group|Agency|Office)\b.*$/i,'').trim();
-  // Remove trailing punctuation and dashes
+  // Strip trailing job titles and descriptors
+  name=name.replace(/\b(Founder|Director|Principal|CEO|MD|Owner|Manager|LIC|LREA|Partner|Co-Director|Managing|Agent|Sales|Leasing|Property|Real|Estate|Realty|Team|Group|Agency|Office|Buyers?|Consultant|Advisor|Representative|Rep|Licensee)\b.*$/i,'').trim();
   name=name.replace(/[,\-:]+$/,'').trim();
-  // Must be at least 4 chars
   if(name.length<4||name.length>50)return null;
-  // Must contain at least one space (first + last name)
   if(!name.includes(' '))return null;
-  // Each word must have at least 2 alpha chars — catches initials like "Mike T"
   const parts=name.split(/\s+/);
   if(parts.some(w=>w.replace(/[^a-zA-Z]/g,'').length<2))return null;
-  // Reject if contains company/brand/location words
-  if(/\b(Pty|Ltd|Group|Agency|Real Estate|Property|Realty|Management|Services|Investments|Solutions|Holdings|Partners|Associates|Consulting|Advisory|Capital|Trust|Fund|Enterprises|Industries|Technologies|Systems|Networks|International|National|Australia|Australian|Hooker|McGrath|Jellis|Harcourts|Coast|Fraser|Central|Eastern|Western|Northern|Southern|Heights|Valley|Hills|Park|North|South|East|West|Inner|Outer)\b/i.test(name))return null;
-  // Reject if more than 4 words
+  // Reject if contains company/brand words
+  if(/\b(Pty|Ltd|Group|Agency|Real\s*Estate|Property|Realty|Management|Services|Holdings|Partners|Associates|International|National|Australia|Australian|Hooker|McGrath|Jellis|Harcourts|Ray\s*White|Barry\s*Plant|Elders|Raine|Horne|Century|Coast|Central|Eastern|Western|Northern|Southern|Hills|Park|North|South|East|West|Buyers?|Team|Office)\b/i.test(name))return null;
   if(parts.length>4)return null;
   return name||null;
 }
@@ -891,6 +885,7 @@ function cleanRowsForExport(rows,industryFallback,filter){
 }
 
 // ─── Multi-source enrichment pipeline ────────────────────────────────────────
+
 async function enrichLead(apiKey,lead,industry,suburb,state){
   if(!apiKey)return{mobile:null,contact:null,title:null,email:null,source:null,free:false};
   const company=lead.company;
@@ -913,7 +908,9 @@ Also check:
 ${landline?`Their office landline is ${landline} — use this to find the right business listing.`:''}
 
 Rules:
-- Return ONE person only — the most senior (owner, principal, director, licensee, founder)
+- Return ONE person only — the BUSINESS OWNER, PRINCIPAL, or DIRECTOR who runs the agency
+- NEVER return a buyers agent, property manager, leasing consultant, sales agent, or junior staff
+- NEVER return franchise brand staff (Ray White area manager, Harcourts regional etc)
 - Name must be FIRST NAME LAST NAME only — no titles, no brackets, no "and", no job titles in the name
 - Mobile must be 04xx format — direct mobile only, not office number
 - If mobile found in a directory listing with a URL, return that URL as source_url
@@ -923,7 +920,7 @@ Return ONLY raw JSON:
 {"contact":"First Last","title":"Their Title","mobile":"04xx xxx xxx or null","email":"email or null","source_url":"https://url or null","source":"yellowpages/reiwa/truelocal/whitepages/google/none"}`;
 
   try{
-    const text1=await callClaude(apiKey,googlePrompt,20000,1,maxS);
+    const text1=await callClaude(apiKey,googlePrompt,15000,1,2);// 2 searches max — directory lookup is fast
     const match1=text1.replace(/```json|```/g,'').trim().match(/\{[\s\S]*?\}/);
     if(match1){
       const d=JSON.parse(match1[0]);
@@ -961,7 +958,7 @@ Rules:
 Return ONLY raw JSON:
 {"contact":"${cleanedName}","title":"Title or null","mobile":"04xx xxx xxx or null","email":"email or null","source_url":"https://exact-page-url or null"}`;
         try{
-          const text2=await callClaude(apiKey,webPrompt,getTimeoutMs(),1,maxS);
+          const text2=await callClaude(apiKey,webPrompt,getTimeoutMs(),1,2);// 2 searches max for website visit
           const match2=text2.replace(/```json|```/g,'').trim().match(/\{[\s\S]*?\}/);
           if(match2){
             const w=JSON.parse(match2[0]);
@@ -1000,18 +997,20 @@ Steps:
 4. Return the exact URL of the page where you found the mobile
 
 Rules:
-- Return ONE person only — the most senior
+- Return ONE person only — the BUSINESS OWNER, PRINCIPAL, DIRECTOR or FOUNDER who runs the agency
+- NEVER return a buyers agent, property manager, leasing consultant, sales agent, or junior staff member
+- NEVER return a franchise brand manager or area/state manager
 - Name = FIRST NAME LAST NAME only — no job titles, no brackets, no "and"
 - CRITICAL: Name must be a REAL PERSON — never return the business name or trading name as the contact
 - If you cannot find a real person's name, return null for contact
-- If multiple people shown, pick the owner/founder/principal
+- If multiple people shown, pick the most senior: Owner > Principal > Director > Founder > LIC
 - source_url is REQUIRED if returning a mobile — if you cannot provide it, return null for mobile
 - Do NOT guess or fabricate numbers
 
 Return ONLY raw JSON:
 {"contact":"First Last or null","title":"Title or null","mobile":"04xx xxx xxx or null","email":"email or null","source_url":"https://exact-page-url or null"}`;
 
-    const text=await callClaude(apiKey,prompt,getTimeoutMs(),1,maxS);
+    const text=await callClaude(apiKey,prompt,getTimeoutMs(),1,3);// 3 searches for full website visit
     const match=text.replace(/```json|```/g,'').trim().match(/\{[\s\S]*?\}/);
     if(match){
       const e=JSON.parse(match[0]);
@@ -1162,10 +1161,13 @@ async function runSearch(forcedPc){
     // Dedup — load ALL companies and mobiles globally across ALL postcodes and runs
     let existingCompanies=new Set();
     let existingMobiles=new Set();
+    let existingLandlines=new Set();
     try{
       // Load companies globally for this industry — NOT filtered by postcode
-      const compRows=await sbFetch(`leads?industry=ilike.${encodeURIComponent(industry)}&select=company&limit=50000`);
+      const compRows=await sbFetch(`leads?industry=ilike.${encodeURIComponent(industry)}&select=company,maps_phone&limit=50000`);
       existingCompanies=new Set((compRows||[]).map(r=>(r.company||'').toLowerCase().trim()));
+      // Also dedup by landline phone — catches same agency with multiple YP listings
+      const existingLandlines=new Set((compRows||[]).filter(r=>r.maps_phone).map(r=>r.maps_phone.replace(/[\s\-().+]/g,'')));
       // Load all mobiles globally
       const mobileRows=await sbFetch(`leads?mobile=not.is.null&select=mobile&limit=50000`);
       existingMobiles=new Set((mobileRows||[]).map(r=>(r.mobile||'').replace(/\s/g,'')));
@@ -1174,6 +1176,7 @@ async function runSearch(forcedPc){
     for(const l of leads){
       if(l.mobile&&l.mobile!=='—')existingMobiles.add(l.mobile.replace(/\s/g,''));
       if(l.company&&l.company!=='—')existingCompanies.add(l.company.toLowerCase().trim());
+      if(l.maps_phone&&l.maps_phone!=='—')existingLandlines.add(l.maps_phone.replace(/[\s\-().+]/g,''));
     }
 
     // Exclusion keywords — filter out false positives before enrichment
@@ -1191,6 +1194,22 @@ async function runSearch(forcedPc){
       const rawAddr=(p.shortFormattedAddress||p.formattedAddress||'');
       // Skip big firms immediately
       if(isBigFirm(p.displayName?.text||'')){skipped++;return false;}
+      // For real estate — reject businesses that are clearly NOT real estate agencies
+      // YP returns conveyancers, builders, caravan repairers etc under "real estate" search
+      if(industry.toLowerCase().includes('real estate')){
+        const nameL=(p.displayName?.text||'').toLowerCase();
+        // Must contain at least one real estate indicator OR be a known RE brand
+        const reKeywords=['real estate','realty','property','harcourts','ray white','lj hooker','century 21','raine','first national','mcgrath','jellis','barry plant','elders','professionals','one agency','eis','fall ','petrusma','parry','4one4','view ','roberts','raine'];
+        const hasREKeyword=reKeywords.some(k=>nameL.includes(k));
+        // Block if name contains clear non-RE business indicators
+        const nonREKeywords=['caravan','crash','smash','tyre','auto','mechanic','plumb','electr','build','construct','conveyancing','conveyancer','lawyer','solicitor','accounting','accountant','financial','insurance','dental','medical','optom','physio','recruit','staffing','cleaning','pest','garden','landscap','security','solar','pool','carpet','paint','roof','tile','fence','concrete','carpet','home builder','home design','display home','volume builder'];
+        const hasNonRE=nonREKeywords.some(k=>nameL.includes(k));
+        if(!hasREKeyword&&hasNonRE){skipped++;return false;}
+        // Block builders/developers without RE keyword
+        if(!hasREKeyword&&/\b(homes|constructions?|developments?|builders?|building)\b/.test(nameL)){skipped++;return false;}
+        // Block property management services — not agency principals
+        if(/\bproperty\s+management\b/i.test(nameL)&&!/\breal\s+estate\b/i.test(nameL)){skipped++;return false;}
+      }
       // YP already filters by state — double check with phone area code
       if(state&&p.nationalPhoneNumber){
         const ph=p.nationalPhoneNumber.replace(/[\s\-().+]/g,'');
@@ -1203,6 +1222,9 @@ async function runSearch(forcedPc){
       if(excludeList.some(kw=>name.includes(kw))){skipped++;return false;}
       // Skip if company already in DB
       if(existingCompanies.has(name)){skipped++;return false;}
+      // Skip if landline already in DB — catches same agency with multiple YP suburb listings
+      const rawPhoneClean=(phone||'').replace(/[\s\-().+]/g,'');
+      if(rawPhoneClean&&existingLandlines&&existingLandlines.has(rawPhoneClean)){skipped++;return false;}
       // Skip if mobile already exists anywhere in DB
       if(mobile&&existingMobiles.has(mobile.replace(/\s/g,''))){skipped++;return false;}
       return true;
@@ -1284,7 +1306,7 @@ async function runSearch(forcedPc){
       lead.enriched=true;lead.enriching=false;
       pushToManual(lead);
       renderTable();updateCounts();updateManualTabBadge();
-      if(i<needsEnrich.length-1&&!stopRequested&&!targetHit())await new Promise(r=>setTimeout(r,2000));
+      if(i<needsEnrich.length-1&&!stopRequested&&!targetHit())await new Promise(r=>setTimeout(r,5000));
     }
 
     // Push YP-mobile leads with no name to manual for name lookup
