@@ -187,6 +187,7 @@
       <label>Industry / Business Type</label>
       <select id="industrySelect" onchange="handleIndustryChange()">
         <option value="real estate agency">Real Estate Agency (Owner / Principal)</option>
+        <option value="property management company">Property Management Company (Owner / Principal)</option>
         <option value="custom">Custom...</option>
       </select>
     </div>
@@ -522,6 +523,7 @@ function getPostcodeQueue(){
 function getYPKeyword(industry){
   const map={
     'real estate agency':'real estate',
+    'property management company':'property management',
     'real estate principal':'real estate',
     'buyers agent':'buyers agent',
     'property management':'property management',
@@ -709,6 +711,7 @@ function updateQueueBar(done,total,label){
 // ─── Industry config — source strategy, search cap, timeout ───────────────────
 const INDUSTRY_CONFIG={
   'real estate agency':{maxSearches:5,timeout:15,source:'google_maps'},
+  'property management company':{maxSearches:5,timeout:15,source:'google_maps'},
   'accounting firm':{maxSearches:5,timeout:15,source:'google_maps'},
   'law firm':{maxSearches:5,timeout:15,source:'google_maps'},
   'mortgage broker':{maxSearches:5,timeout:15,source:'google_maps'},
@@ -739,6 +742,7 @@ function getIndustryConfig(industry){
 // Industry aliases — multiple search terms per industry to get more results
 const INDUSTRY_ALIASES={
   'real estate agency':['real estate agency','real estate agent','real estate office'],
+  'property management company':['property management','property manager','property management company'],
   'accounting firm':['accounting firm','accountant','CPA firm','chartered accountant','tax agent'],
   'law firm':['law firm','solicitor','lawyer','legal practice','barrister'],
   'mortgage broker':['mortgage broker','home loan broker','finance broker','mortgage lender'],
@@ -1242,10 +1246,10 @@ async function runSearch(forcedPc){
       if(isBigFirm(p.displayName?.text||'')){skipped++;return false;}
       // For real estate — reject businesses that are clearly NOT real estate agencies
       // YP returns conveyancers, builders, caravan repairers etc under "real estate" search
-      if(industry.toLowerCase().includes('real estate')){
+      if(industry.toLowerCase().includes('real estate')||industry.toLowerCase().includes('property management')){
         const nameL=(p.displayName?.text||'').toLowerCase();
         // Must contain at least one real estate indicator OR be a known RE brand
-        const reKeywords=['real estate','realty','property','harcourts','ray white','lj hooker','century 21','raine','first national','mcgrath','jellis','barry plant','elders','professionals','one agency','eis','fall ','petrusma','parry','4one4','view ','roberts','raine'];
+        const reKeywords=['real estate','realty','harcourts','ray white','lj hooker','century 21','raine','first national','mcgrath','jellis','barry plant','elders','professionals','one agency','eis','fall ','petrusma','parry','4one4','view ','roberts'];
         const hasREKeyword=reKeywords.some(k=>nameL.includes(k));
         // Block if name contains clear non-RE business indicators
         const nonREKeywords=['caravan','crash','smash','tyre','auto','mechanic','plumb','electr','build','construct','conveyancing','conveyancer','lawyer','solicitor','accounting','accountant','financial','insurance','dental','medical','optom','physio','recruit','staffing','cleaning','pest','garden','landscap','security','solar','pool','carpet','paint','roof','tile','fence','concrete','carpet','home builder','home design','display home','volume builder'];
@@ -1253,8 +1257,8 @@ async function runSearch(forcedPc){
         if(!hasREKeyword&&hasNonRE){skipped++;return false;}
         // Block builders/developers without RE keyword
         if(!hasREKeyword&&/\b(homes|constructions?|developments?|builders?|building)\b/.test(nameL)){skipped++;return false;}
-        // Block property management services — not agency principals
-        if(/\bproperty\s+management\b/i.test(nameL)&&!/\breal\s+estate\b/i.test(nameL)){skipped++;return false;}
+        // Block property management services — unless RE brand present or searching PM industry
+        if(/\bproperty\s+management\b/i.test(nameL)&&!hasREKeyword&&!industry.toLowerCase().includes('property management')){skipped++;return false;}
       }
       // YP already filters by state — double check with phone area code
       if(state&&p.nationalPhoneNumber){
@@ -1682,7 +1686,7 @@ async function exportRunFromDB(runId,postcode,suburb,state,industry){
 }
 
 // ─── Industry / CSV helpers ───────────────────────────────────────────────────
-const IND_MAP={'real estate agency':'Real Estate','accounting firm':'Finance','law firm':'Legal','mortgage broker':'Finance','financial planning firm':'Finance','it company':'Technology','marketing agency':'Media & Advertising','construction company':'Engineering & Construction','medical practice':'Healthcare','dental practice':'Healthcare','recruitment agency':'Staffing & Recruitment','insurance broker':'Insurance','engineering firm':'Engineering & Construction'};
+const IND_MAP={'real estate agency':'Real Estate','property management company':'Real Estate','accounting firm':'Finance','law firm':'Legal','mortgage broker':'Finance','financial planning firm':'Finance','it company':'Technology','marketing agency':'Media & Advertising','construction company':'Engineering & Construction','medical practice':'Healthcare','dental practice':'Healthcare','recruitment agency':'Staffing & Recruitment','insurance broker':'Insurance','engineering firm':'Engineering & Construction'};
 function mapIndustry(raw){if(!raw)return'';const k=raw.toLowerCase().trim();return IND_MAP[k]||raw.split(' ').map(w=>w.charAt(0).toUpperCase()+w.slice(1)).join(' ');}
 
 function downloadCSV(rows,filename){
