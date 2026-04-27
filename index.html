@@ -130,11 +130,21 @@
 <!-- ═══ PROSPECT ══════════════════════════════════════════════════════════════ -->
 <div class="pane active" id="pane-prospect">
 
-  <div class="keys-row">
+  <div class="keys-row" style="grid-template-columns:1fr 1fr 1fr 1fr auto">
     <div class="field-wrap"><label>Anthropic API Key</label><input type="password" id="apiKey" placeholder="sk-ant-..." autocomplete="off"/></div>
     <div class="field-wrap"><label>Apify Token</label><input type="password" id="apifyKey" placeholder="apify_api_..." autocomplete="off"/></div>
+    <div class="field-wrap"><label>Google Places API Key</label><input type="password" id="placesKey" placeholder="AIza... (optional)" autocomplete="off"/></div>
     <div class="field-wrap"><label>Your name (run log)</label><input type="text" id="runBy" placeholder="e.g. Stefan"/></div>
     <button class="btn-ghost" onclick="saveKeys()" style="margin-top:auto">Save</button>
+  </div>
+  <!-- Google Reviews filter toggle -->
+  <div style="display:flex;align-items:center;gap:12px;padding:7px 14px;background:var(--surface);border:1px solid var(--border);border-radius:4px;margin-bottom:10px;font-size:12px">
+    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--muted)">
+      <input type="checkbox" id="reviewsFilter" style="accent-color:var(--accent)" onchange="saveKeys()">
+      <span>Google Reviews filter — skip agencies with fewer than</span>
+    </label>
+    <input type="number" id="reviewsMin" value="5" min="1" max="100" style="width:52px;height:28px;padding:4px 8px;font-size:12px" onchange="saveKeys()">
+    <span style="color:var(--muted)">reviews (requires Google Places API key)</span>
   </div>
 
   <div class="mode-row">
@@ -386,10 +396,14 @@ const PAGE_SIZE=20,PC_CACHE={};
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 window.addEventListener('load',()=>{
-  const ak=localStorage.getItem('lp_ak'),apk=localStorage.getItem('rep_apify'),rb=localStorage.getItem('lp_rb');
+  const ak=localStorage.getItem('lp_ak'),apk=localStorage.getItem('rep_apify'),gk=localStorage.getItem('rep_gk'),rb=localStorage.getItem('lp_rb');
   if(ak)document.getElementById('apiKey').value=ak;
   if(apk&&document.getElementById('apifyKey'))document.getElementById('apifyKey').value=apk;
+  if(gk&&document.getElementById('placesKey'))document.getElementById('placesKey').value=gk;
   if(rb)document.getElementById('runBy').value=rb;
+  const rf=localStorage.getItem('rep_rf');const rm=localStorage.getItem('rep_rm');
+  if(rf&&document.getElementById('reviewsFilter'))document.getElementById('reviewsFilter').checked=rf==='1';
+  if(rm&&document.getElementById('reviewsMin'))document.getElementById('reviewsMin').value=rm;
   const saved=JSON.parse(localStorage.getItem('lp_customs')||'[]');
   const sel=document.getElementById('industrySelect');
   saved.forEach(v=>{const o=document.createElement('option');o.value=v;o.textContent=v;sel.insertBefore(o,sel.querySelector('option[value="custom"]'));});
@@ -399,10 +413,16 @@ window.addEventListener('load',()=>{
 function saveKeys(){
   const ak=document.getElementById('apiKey').value.trim();
   const apk=document.getElementById('apifyKey')?document.getElementById('apifyKey').value.trim():'';
+  const gk=document.getElementById('placesKey')?document.getElementById('placesKey').value.trim():'';
   const rb=document.getElementById('runBy').value.trim();
+  const rf=document.getElementById('reviewsFilter')?document.getElementById('reviewsFilter').checked:false;
+  const rm=document.getElementById('reviewsMin')?document.getElementById('reviewsMin').value:'5';
   if(ak)localStorage.setItem('lp_ak',ak);
   if(apk)localStorage.setItem('rep_apify',apk);
+  if(gk)localStorage.setItem('rep_gk',gk);
   if(rb)localStorage.setItem('lp_rb',rb);
+  localStorage.setItem('rep_rf',rf?'1':'0');
+  localStorage.setItem('rep_rm',rm);
   setStatus('Keys saved.','done');
 }
 
@@ -886,6 +906,32 @@ function cleanRowsForExport(rows,industryFallback,filter){
 
 // ─── Multi-source enrichment pipeline ────────────────────────────────────────
 
+// ─── Google Reviews count filter ─────────────────────────────────────────────
+async function checkGoogleReviews(placesKey,company,suburb,state){
+  if(!placesKey)return{pass:true,reviewCount:null,suburb:suburb};
+  try{
+    const resp=await fetch('https://places.googleapis.com/v1/places:searchText',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','X-Goog-Api-Key':placesKey,'X-Goog-FieldMask':'places.userRatingCount,places.addressComponents'},
+      body:JSON.stringify({textQuery:`${company} ${suburb||state} real estate`,maxResultCount:1,languageCode:'en'})
+    });
+    if(!resp.ok)return{pass:true,reviewCount:null,suburb:suburb};
+    const data=await resp.json();
+    const place=data.places&&data.places[0];
+    if(!place)return{pass:true,reviewCount:null,suburb:suburb};
+    const reviewCount=place.userRatingCount||0;
+    // Extract actual suburb from Google address components
+    let foundSuburb=suburb;
+    if(place.addressComponents){
+      const loc=place.addressComponents.find(c=>c.types&&c.types.includes('locality'));
+      if(loc)foundSuburb=loc.longText||suburb;
+    }
+    return{pass:true,reviewCount,suburb:foundSuburb};// always pass — just used for suburb extraction + logging
+  }catch(e){
+    return{pass:true,reviewCount:null,suburb:suburb};// fail open
+  }
+}
+
 async function enrichLead(apiKey,lead,industry,suburb,state){
   if(!apiKey)return{mobile:null,contact:null,title:null,email:null,source:null,free:false};
   const company=lead.company;
@@ -1281,7 +1327,21 @@ async function runSearch(forcedPc){
       const prog=addProgress(`[${i+1}/${needsEnrich.length}] ${lead.company}`,'active');
 
       try{
-        const result=await enrichLead(apiKey,lead,industry,lead.cleanSuburb||lead.suburb||state,state);
+        // Google Reviews filter — skip if under minimum review count
+      const placesKey=localStorage.getItem('rep_gk')||'';
+      const reviewsOn=localStorage.getItem('rep_rf')==='1';
+      const reviewsMin=parseInt(localStorage.getItem('rep_rm')||'5');
+      if(placesKey&&reviewsOn){
+        const rv=await checkGoogleReviews(placesKey,lead.company,lead.cleanSuburb||lead.suburb||state,state);
+        if(rv.reviewCount!==null&&rv.reviewCount<reviewsMin){
+          lead.enrich_status='filtered_reviews';lead.enriched=true;
+          const p2=addProgress(`[${i+1}/${needsEnrich.length}] ${lead.company} — skipped (${rv.reviewCount} reviews)`,'skip');
+          lead.cleanSuburb=rv.suburb||lead.cleanSuburb;
+          renderTable();continue;
+        }
+        if(rv.suburb&&rv.suburb!==state)lead.cleanSuburb=rv.suburb;
+      }
+      const result=await enrichLead(apiKey,lead,industry,lead.cleanSuburb||lead.suburb||state,state);
         const cleanedContact=result.contact?cleanContactName(result.contact):null;
         lead.contact=cleanedContact||'—';
         lead.title=result.title||'—';
